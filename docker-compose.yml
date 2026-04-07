@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  cert-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cert-manager
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      # Port 5050 for ClearPass PFX callback (optional)
+      # - "5050:8000"
+    environment:
+      - EDGE_DOMAIN=${EDGE_DOMAIN:-localhost}
+      - DATA_DIR=/app/data
+      - SSL_DIR=/etc/letsencrypt
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-true}
+      - SCHEDULER_TIME=${SCHEDULER_TIME:-00:30}
+      - NGINX_CONTAINER_NAME=${NGINX_CONTAINER_NAME:-nginx}
+    volumes:
+      # Persistent data (config, credentials, logs)
+      - ./data:/app/data
+      # SSL certificates (shared with nginx if applicable)
+      - ./ssl:/etc/letsencrypt
+      # Docker socket for nginx reload (optional)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Add to docker group for socket access (adjust GID as needed)
+    # group_add:
+    #   - "988"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Security options (uncomment for production)
+    # security_opt:
+    #   - no-new-privileges:true
+    # cap_drop:
+    #   - ALL
+    # cap_add:
+    #   - NET_BIND_SERVICE
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
+    #   - /app/.cache

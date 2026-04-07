@@ -1,0 +1,45 @@
+[project]
+name = "cert-manager"
+version = "1.0.0"
+description = "Standalone certificate lifecycle management with ACME and ClearPass deployment"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "cryptography>=42.0.0",
+    "pyyaml>=6.0",
+    "requests>=2.31.0",
+    "requests-unixsocket>=0.3.0",
+    "certbot>=2.9.0",
+    "certbot-dns-cloudflare>=2.9.0",
+    "certbot-dns-route53>=2.9.0",
+    "certbot-dns-digitalocean>=2.9.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.3.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

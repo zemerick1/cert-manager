@@ -1,0 +1,110 @@
+# Certificate Manager Configuration Example
+# Copy this file to config.yaml and update values for your environment
+
+# Application settings
+app:
+  log_level: INFO
+  scheduler_time: "00:30"  # Daily renewal check time (UTC)
+
+# Managed services (ClearPass, etc.)
+services:
+  - name: cppm-https-rsa
+    host: clearpass.example.com
+    type: clearpass
+    cert_pack_id: my-domain
+    cert_usage: HTTPS(RSA)
+    enabled: true
+    credential_id: cppm-prod
+    additional_nodes: []
+    health_status: null
+    last_renewal: null
+
+  - name: cppm-radius
+    host: clearpass.example.com
+    type: clearpass
+    cert_pack_id: radius-cert
+    cert_usage: RADIUS
+    enabled: true
+    credential_id: cppm-prod
+    additional_nodes: []
+
+# Service types (for validation)
+service_types:
+  clearpass: clearpass
+
+# Certificate pack metadata
+# Actual cert files are stored in data/certs/ or ssl/live/
+cert_packs:
+  my-domain:
+    source: acme
+    domains:
+      - example.com
+      - "*.example.com"
+    challenge_type: dns-01
+    provider: cloudflare
+    credential_id: cloudflare-main
+    acme_email: admin@example.com
+    key_type: ecdsa
+    is_edge: true
+    auto_renew: true
+    renew_days_before: 30
+    last_renewal_status: SUCCESS
+    retry_count: 0
+    last_acme_renewal: "2024-01-15T00:30:00+00:00"
+
+  radius-cert:
+    source: acme
+    domains:
+      - radius.example.com
+    challenge_type: dns-01
+    provider: cloudflare
+    credential_id: cloudflare-main
+    acme_email: admin@example.com
+    key_type: rsa
+    is_edge: false
+    auto_renew: true
+    renew_days_before: 30
+    last_renewal_status: SUCCESS
+
+  manual-cert:
+    source: manual
+    is_edge: false
+    auto_renew: false
+
+# Credentials (stored directly in config - no external dependency)
+credentials:
+  # ACME provider credentials
+  acme:
+    cloudflare-main:
+      name: Cloudflare DNS
+      provider: cloudflare
+      api_token: "your-cloudflare-api-token-here"
+      email: admin@example.com
+
+    route53-aws:
+      name: AWS Route53
+      provider: route53
+      access_key_id: "AKIAIOSFODNN7EXAMPLE"
+      secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+      region: us-east-1
+
+    digitalocean-dns:
+      name: DigitalOcean DNS
+      provider: digitalocean
+      api_token: "dop_v1_your-token-here"
+
+  # ClearPass OAuth credentials
+  clearpass:
+    cppm-prod:
+      name: Production ClearPass
+      host: clearpass.example.com
+      client_id: "your-oauth-client-id"
+      client_secret: "your-oauth-client-secret"
+      verify_ssl: false
+
+    cppm-staging:
+      name: Staging ClearPass
+      host: clearpass-staging.example.com
+      client_id: "staging-client-id"
+      client_secret: "staging-client-secret"
+      verify_ssl: false
