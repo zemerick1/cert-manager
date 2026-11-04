@@ -224,7 +224,10 @@
           <label for="cp-name">Display name</label>
           <input id="cp-name" autocomplete="organization">
           <label for="cp-host">Publisher hostname</label>
-          <input id="cp-host" autocomplete="off" placeholder="clearpass.example.com" spellcheck="false">
+          <input id="cp-host" autocomplete="off" placeholder="cppm-node1.example.com" spellcheck="false">
+          <label for="cp-nodes">Other cluster nodes</label>
+          <textarea id="cp-nodes" placeholder="cppm-node2.example.com" spellcheck="false"></textarea>
+          <p class="hint">One hostname per line. Deploy logs into the publisher and installs the certificate on every server the cluster API returns, then contacts each name here the same way.</p>
           <label for="cp-client">Client ID</label>
           <input id="cp-client" autocomplete="off" spellcheck="false">
           <label for="cp-secret">Client secret</label>
@@ -271,6 +274,42 @@
         <div id="issue-result" class="result" hidden></div>
       </div>
     </details>
+
+    <details class="card" id="card-byoc">
+      <summary>
+        <span class="num">4</span>
+        <h2 id="byoc-title">Your certificate</h2>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="panel">
+        <p class="hint">Install a certificate you already have. The chain is the server certificate first, then any intermediates, in PEM. The private key is the matching unencrypted PEM key. Let's Encrypt is not contacted. Save and install stores the certificate and deploys it to the publisher and the other cluster nodes.</p>
+        <form id="byoc-form">
+          <label for="byoc-name">Name for this certificate</label>
+          <input id="byoc-name" placeholder="clearpass.example.com" autocomplete="off" spellcheck="false">
+          <label for="byoc-chain-file">Certificate chain file</label>
+          <input id="byoc-chain-file" type="file" accept=".pem,.crt,.cer,.txt,text/plain">
+          <label for="byoc-chain">Certificate chain PEM</label>
+          <textarea id="byoc-chain" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+          <label for="byoc-key-file">Private key file</label>
+          <input id="byoc-key-file" type="file" accept=".pem,.key,.txt,text/plain">
+          <label for="byoc-key">Private key PEM</label>
+          <textarea id="byoc-key" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+          <label for="byoc-usage">Use on ClearPass</label>
+          <select id="byoc-usage">
+            <option value="HTTPS(RSA)">HTTPS (RSA) — web login and API</option>
+            <option value="HTTPS(ECC)">HTTPS (ECC) — web login and API</option>
+            <option value="RADIUS">RADIUS — 802.1X / EAP</option>
+            <option value="RadSec">RadSec — RADIUS over TLS</option>
+            <option value="Database">Database</option>
+          </select>
+          <p id="byoc-block" class="hint"></p>
+          <div class="actions">
+            <button type="submit" class="primary" id="byoc-button">Save and install</button>
+          </div>
+        </form>
+        <div id="byoc-result" class="result" hidden></div>
+      </div>
+    </details>
   </main>
   <footer>
     <p>Secrets stay in this service's config file. This page does not ask for a password.</p>
@@ -309,13 +348,23 @@
     });
     $("refresh").addEventListener("click", () => refresh().catch(showLoadError));
     $("email").addEventListener("change", () => localStorage.setItem("cm-email", $("email").value.trim()));
-    ["cp-name", "cp-host", "cp-client"].forEach((id) => {
+    ["cp-name", "cp-host", "cp-client", "cp-nodes"].forEach((id) => {
       $(id).addEventListener("change", () => localStorage.setItem("cm-" + id, $(id).value.trim()));
     });
-    ["domains", "email", "usage", "cf-saved", "cp-saved"].forEach((id) => {
+    ["domains", "email", "usage", "cf-saved", "cp-saved", "cp-nodes"].forEach((id) => {
       $(id).addEventListener("input", updateIssueButton);
       $(id).addEventListener("change", updateIssueButton);
     });
+    $("byoc-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveAndInstallOwn();
+    });
+    ["byoc-name", "byoc-chain", "byoc-key", "byoc-usage"].forEach((id) => {
+      $(id).addEventListener("input", updateByocButton);
+      $(id).addEventListener("change", updateByocButton);
+    });
+    $("byoc-chain-file").addEventListener("change", () => readPemFile($("byoc-chain-file"), "byoc-chain"));
+    $("byoc-key-file").addEventListener("change", () => readPemFile($("byoc-key-file"), "byoc-key"));
 
     function selectedAcme() {
       return state.acme.find((item) => item.id === cfSaved.value && item.provider === "cloudflare") || null;
@@ -434,7 +483,9 @@
       renderSavedCerts();
       fillList($("status-services"), state.services.map((service) => {
         const pack = service.cert_pack_id ? " — certificate " + service.cert_pack_id : " — no certificate assigned";
-        return service.name + " — " + service.cert_usage + " on " + service.host + pack;
+        const extra = (service.additional_nodes || []).length;
+        const nodes = extra ? " — " + (extra + 1) + " cluster nodes" : "";
+        return service.name + " — " + service.cert_usage + " on " + service.host + nodes + pack;
       }));
       if (!state.services.length) fillList($("status-services"), ["No ClearPass targets yet."]);
 
@@ -448,6 +499,9 @@
       const chosen = selectedClearpass();
       if (chosen && !$("cp-host").value) $("cp-host").value = chosen.host || "";
       if (chosen && !$("cp-name").value) $("cp-name").value = chosen.name || "";
+      if (chosen && !$("cp-nodes").value && chosen.additional_nodes && chosen.additional_nodes.length) {
+        $("cp-nodes").value = chosen.additional_nodes.join("\n");
+      }
 
       const banner = $("callback");
       const base = health.callback_base || "http://localhost";
@@ -522,8 +576,13 @@
       updateIssueButton();
       renderSavedCerts();
       try {
-        if (service.cert_pack_id !== packName) {
-          await api("PATCH", "/api/services/" + encodeURIComponent(service.name), { cert_pack_id: packName });
+        const nodes = clusterNodes();
+        const sameNodes = JSON.stringify(service.additional_nodes || []) === JSON.stringify(nodes);
+        if (service.cert_pack_id !== packName || !sameNodes) {
+          await api("PATCH", "/api/services/" + encodeURIComponent(service.name), {
+            cert_pack_id: packName,
+            additional_nodes: nodes,
+          });
         }
         const deployed = await api("POST", "/api/services/" + encodeURIComponent(service.name) + "/deploy");
         const kind = deployed.success ? (deployed.message && deployed.message.includes("CA trust") ? "warn" : "ok") : "bad";
@@ -558,6 +617,33 @@
       $("cp-test-saved").disabled = state.busy || !selectedClearpass();
       $("issue-button").disabled = state.busy || reasons.length > 0;
       $("issue-block").textContent = reasons.join(" ");
+      updateByocButton();
+    }
+
+    function updateByocButton() {
+      const reasons = [];
+      if (!selectedClearpass()) reasons.push("Save a ClearPass login.");
+      if (!$("byoc-name").value.trim()) reasons.push("Name the certificate.");
+      if (!$("byoc-chain").value.includes("BEGIN CERTIFICATE")) reasons.push("Paste the certificate chain.");
+      if (!$("byoc-key").value.includes("PRIVATE")) reasons.push("Paste the private key.");
+      if (callbackBlocked()) reasons.push("EDGE_DOMAIN is still a local address, so install stays off.");
+      $("byoc-button").disabled = state.busy || reasons.length > 0;
+      $("byoc-block").textContent = reasons.join(" ");
+    }
+
+    function readPemFile(input, targetId) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        $(targetId).value = String(reader.result || "");
+        updateByocButton();
+      };
+      reader.readAsText(file);
+    }
+
+    function clusterNodes() {
+      return parseDomains($("cp-nodes").value);
     }
 
     function showLoadError(error) {
@@ -697,6 +783,7 @@
           client_id: body.client_id,
           client_secret: body.client_secret,
           verify_ssl: false,
+          additional_nodes: clusterNodes(),
         });
         $("cp-secret").value = "";
         await refresh();
@@ -771,7 +858,7 @@
         cert_usage: usage,
         credential_id: credential.id,
         enabled: true,
-        additional_nodes: [],
+        additional_nodes: clusterNodes(),
       };
       const exists = state.services.some((service) => service.name === name);
       if (exists) {
@@ -831,10 +918,48 @@
       }
     }
 
+    async function saveAndInstallOwn() {
+      const clearpass = selectedClearpass();
+      const name = $("byoc-name").value.trim();
+      const chain = $("byoc-chain").value.trim();
+      const key = $("byoc-key").value.trim();
+      if (!clearpass || !name || !chain.includes("BEGIN CERTIFICATE") || !key.includes("PRIVATE") || callbackBlocked()) {
+        updateByocButton();
+        return;
+      }
+      state.busy = true;
+      updateIssueButton();
+      try {
+        const uploaded = await api("POST", "/api/certs/upload", {
+          pack_name: name,
+          fullchain: chain,
+          privkey: key,
+          is_edge: false,
+        });
+        if (!uploaded.success) {
+          setResult($("byoc-result"), "bad", uploaded.message || "Upload failed.");
+          return;
+        }
+        const deployed = await deployPack(name, $("byoc-usage").value, clearpass);
+        const kind = deployed.success ? (deployed.message && deployed.message.includes("CA trust") ? "warn" : "ok") : "bad";
+        const stage = deployed.data && deployed.data.stage ? " (" + deployed.data.stage + ")" : "";
+        setResult($("byoc-result"), kind, (uploaded.message || "Certificate saved.") + " " + (deployed.message || "Install finished.") + stage);
+        $("byoc-key").value = "";
+        $("byoc-key-file").value = "";
+      } catch (error) {
+        setResult($("byoc-result"), "bad", error.message);
+      } finally {
+        state.busy = false;
+        updateIssueButton();
+        await refresh().catch(showLoadError);
+      }
+    }
+
     rememberText("email");
     rememberText("cp-name");
     rememberText("cp-host");
     rememberText("cp-client");
+    rememberText("cp-nodes");
     refresh().catch(showLoadError);
   </script>
 </body>

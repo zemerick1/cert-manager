@@ -36,7 +36,7 @@ Certificates with `is_edge: false` are stored under `data/certs/`. That is the u
 
 **ClearPass install.** Deploy does not upload the certificate in the API body. It tells each node to download `http://EDGE_DOMAIN/download/<token>/clearpass.pfx` on port 80. `EDGE_DOMAIN` is the hostname or IP address of the machine running this service, the address ClearPass can open. It is set in `.env`. The certificate name and the ClearPass hostname belong in `EDGE_DOMAIN` only when they also point at this host. Docker Compose publishes port 80 and port 8000 to the same process. The process listens on 8000. Docker accepts port 80 and forwards it.
 
-The publisher's cluster API supplies the node list. `additional_nodes` on a service are extra hosts contacted directly.
+The publisher's cluster API supplies the node list, and the certificate is installed on each of those servers. `additional_nodes` are further hostnames contacted directly. A usual cluster is the publisher plus one or more subscribers. The setup page stores those subscriber hostnames with the ClearPass login.
 
 **Setup page.** `GET /` returns one HTML file. There is no separate frontend build. The page saves a Cloudflare token, saves a ClearPass API client, issues a certificate, and installs it by calling `/api`. Current state lists saved certificates and can deploy one of them again. The API keeps working with the page closed.
 
@@ -102,6 +102,7 @@ The page has four cards:
 2. **Cloudflare.** Create an API token in Cloudflare with Zone DNS Edit and Zone Zone Read on the zone that owns the name. Paste the token here. This is not the Global API Key.
 3. **ClearPass.** Create the API client in ClearPass first (Administration, API Services, API Clients). Operating mode is ClearPass REST API, grant type is Client credentials, and the operator profile must be allowed to manage server certificates and the trust list. Test login reads the DNS name currently installed for HTTPS (RSA), HTTPS (ECC), RADIUS / EAP, RadSec, and Database.
 4. **Certificate.** Names on the certificate, the Let's Encrypt account email, and the ClearPass usage. Issue and install requests a certificate and then deploys it. Deploy on a saved certificate does not request a new one.
+5. **Your certificate.** Paste a PEM chain and private key you already have. Save and install stores that pack as a manual certificate and deploys it. Let's Encrypt is not contacted, and the daily job does not renew it.
 
 The ClearPass API client cannot be created from this page. The client secret is shown once inside ClearPass.
 
@@ -237,7 +238,8 @@ curl -X POST http://localhost:8000/api/services \
     "cert_pack_id": "clearpass.example.com",
     "cert_usage": "HTTPS(RSA)",
     "credential_id": "cppm-prod",
-    "enabled": true
+    "enabled": true,
+    "additional_nodes": ["cppm-node2.example.com"]
   }'
 
 curl -X POST http://localhost:8000/api/services/clearpass-https-rsa/deploy
@@ -257,9 +259,9 @@ A failed install leaves the certificate on disk. Call deploy again after `EDGE_D
 
 On a successful login test, the API returns the DNS name on each of those certificates for every node in the cluster. A usage with no certificate is an empty name list and the login still succeeds.
 
-Deploy installs the pack on the nodes returned by the publisher cluster API. CA certificates from the chain are added to the trust list when they are missing. A CA trust failure is reported in the deploy message and does not by itself undo an install that succeeded.
+Deploy installs the pack on the nodes returned by the publisher cluster API, then repeats that install on each hostname in `additional_nodes`. Put the publisher in `host` and the subscribers in `additional_nodes`. The setup page field "Other cluster nodes" is that list. CA certificates from the chain are added to the trust list when they are missing. A CA trust failure is reported in the deploy message and does not by itself undo an install that succeeded.
 
-For extra hosts that are not in that cluster response, set `additional_nodes` on the service. The setup page does not ask for them.
+A certificate you already have is `POST /api/certs/upload` with PEM `fullchain` and `privkey`. The pack is `manual`, `auto_renew` stays off, and deploy installs it on the same cluster. The private key must match the first certificate in the chain and must not be encrypted.
 
 ## Nginx
 

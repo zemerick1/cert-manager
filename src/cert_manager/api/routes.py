@@ -24,6 +24,7 @@ from cert_manager.api.models import (
     ServiceInput,
     ServiceUpdateInput,
 )
+from cert_manager.core import cert_validator
 from cert_manager.handlers.clearpass import ArubaClearPassHandler, get_callback_base
 from cert_manager.services.cert_jobs import JobInProgress, run_renew_job, run_request_job
 
@@ -176,10 +177,17 @@ def request_certificate(data: CertRequestInput, ctx: Context):
 
 @router.post("/certs/upload", response_model=OperationResult, tags=["Certificates"])
 def upload_certificate(data: CertUploadInput, ctx: Context):
-    """Uploads a manual certificate."""
+    """Stores a certificate the caller already has.
+
+    The pack is marked manual and is not renewed with Let's Encrypt.
+    Deploy installs it the same way as an issued certificate.
+    """
     try:
         fullchain = data.fullchain.encode()
         privkey = data.privkey.encode()
+        checked = _validate_uploaded_pair(fullchain, privkey)
+        if checked is not None:
+            return checked
 
         ctx["cert_store"].save_pack(
             name=data.pack_name,
@@ -188,23 +196,51 @@ def upload_certificate(data: CertUploadInput, ctx: Context):
             is_edge=data.is_edge,
         )
 
-        # Save metadata
+        cert = cert_validator.load_cert(fullchain)
+        details = cert_validator.get_cert_details(cert) if cert else {}
         ctx["config"].set_cert_pack_meta(
             data.pack_name,
             {
                 "source": "manual",
                 "is_edge": data.is_edge,
                 "auto_renew": False,
+                "domains": details.get("sans") or [],
+                "key_type": cert_validator.detect_key_type(fullchain),
             },
         )
 
+        names = ", ".join(details.get("sans") or []) or data.pack_name
         return OperationResult(
             success=True,
-            message=f"Certificate uploaded as '{data.pack_name}'",
+            message=f"Certificate uploaded as '{data.pack_name}' ({names})",
         )
     except Exception as e:
         logger.error(f"Certificate upload failed: {e}")
         return OperationResult(success=False, message=str(e))
+
+
+def _validate_uploaded_pair(fullchain: bytes, privkey: bytes):
+    """Returns an error result when the PEM pair cannot be installed."""
+    cert = cert_validator.load_cert(fullchain)
+    if cert is None:
+        return OperationResult(
+            success=False,
+            message=(
+                "The certificate chain is not a PEM certificate. Put the server certificate first."
+            ),
+        )
+    key = cert_validator.load_key(privkey)
+    if key is None:
+        return OperationResult(
+            success=False,
+            message="The private key is not an unencrypted PEM key.",
+        )
+    if not cert_validator.validate_key_match(cert, key):
+        return OperationResult(
+            success=False,
+            message="The private key does not match the certificate.",
+        )
+    return None
 
 
 @router.post("/certs/{pack_name}/renew", response_model=OperationResult, tags=["Certificates"])
@@ -427,6 +463,7 @@ def list_clearpass_credentials(ctx: Context):
             id=cred_id,
             name=data.get("name", cred_id),
             host=data.get("host", ""),
+            additional_nodes=list(data.get("additional_nodes") or []),
         )
         for cred_id, data in creds.items()
     ]

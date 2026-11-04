@@ -250,21 +250,32 @@ class ArubaClearPassHandler(CertificateHandler):
             return _node_result(host, False, "exception", str(e))
 
     def check_remote_expiry(self) -> dict:
-        """Checks ClearPass certificate status."""
+        """Checks the certificate on the publisher and each additional node.
+
+        A node that cannot be read does not hide a successful read of the
+        others. Different serial numbers across the hosts that did answer
+        are reported as a mismatch so the monitor installs the saved pack.
+        """
         usage = self.config.get("cert_usage", "https(rsa)").lower()
+        primary = self._parse_config()[0] or self.config.get("host", "")
+        hosts = self._build_host_list(primary)
+        results = []
+        for host in hosts:
+            if usage.startswith("https"):
+                results.append(self._check_via_tls(usage, host))
+            else:
+                results.append(self._check_via_api(usage, host))
+        return _combine_node_checks(results)
 
-        if usage.startswith("https"):
-            return self._check_via_tls(usage)
-        return self._check_via_api(usage)
-
-    def _check_via_tls(self, usage: str) -> dict:
+    def _check_via_tls(self, usage: str, host: str | None = None) -> dict:
         """Checks ClearPass HTTPS cert using TLS cipher selection."""
-        host = self.config.get("host")
+        host = host or self.config.get("host")
         if not host:
             return {"success": False, "message": "No host configured"}
 
         if "://" in host:
             host = host.split("://", 1)[1]
+        host = host.split("/")[0]
 
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -287,9 +298,18 @@ class ArubaClearPassHandler(CertificateHandler):
             self.logger.error(f"ClearPass TLS check failed: {e}")
             return {"success": False, "message": str(e)}
 
-    def _check_via_api(self, usage: str) -> dict:
-        """Checks ClearPass cert for non-HTTPS types via REST API."""
-        host, client_id, client_secret = self._parse_config()
+    def _check_via_api(self, usage: str, host: str | None = None) -> dict:
+        """Checks one ClearPass host for a non-HTTPS certificate.
+
+        Every server returned by that host's cluster API is read. One
+        missing certificate among readable servers is a cluster mismatch.
+        """
+        parsed_host, client_id, client_secret = self._parse_config()
+        if host:
+            if "://" not in host:
+                host = f"https://{host}"
+        else:
+            host = parsed_host
         if not all([host, client_id, client_secret]):
             return {"success": False, "message": "Missing ClearPass credentials"}
 
@@ -311,9 +331,21 @@ class ArubaClearPassHandler(CertificateHandler):
                 }
 
             api_usage = USAGE_MAP.get(usage, self.config.get("cert_usage", "RADIUS"))
-            first_uuid = next(iter(server_uuids.values()))
-
-            return _get_cert_via_api(host, headers, first_uuid, api_usage, self.logger)
+            checks = []
+            for name, server_uuid in server_uuids.items():
+                result = _get_cert_via_api(host, headers, server_uuid, api_usage, self.logger)
+                message = result.get("message") or ""
+                missing = (
+                    message == "No certificate in API response" or "API returned 404" in message
+                )
+                if not result.get("success") and missing:
+                    result = {
+                        "success": True,
+                        "serial_number": "cluster-mismatch",
+                        "message": f"{name} has no readable {api_usage} certificate.",
+                    }
+                checks.append(result)
+            return _combine_node_checks(checks)
         except Exception as e:
             self.logger.error(f"ClearPass API cert check failed: {e}")
             return {"success": False, "message": str(e)}
@@ -660,6 +692,33 @@ def _install_cert_on_servers(
     else:
         message = "; ".join(item["message"] for item in results) or "No cluster servers to update."
     return {"success": bool(installed), "message": message, "servers": results}
+
+
+def _combine_node_checks(results: list[dict]) -> dict:
+    """Folds per-node certificate reads into one health result.
+
+    Connection failures are returned only when no node could be read.
+    Serial numbers that disagree produce a mismatch the monitor redeploys.
+    """
+    ok = [item for item in results if item.get("success")]
+    bad = [item for item in results if not item.get("success")]
+    if not ok:
+        if bad:
+            return bad[0]
+        return {"success": False, "message": "No ClearPass hosts to check"}
+
+    serials = {item.get("serial_number") for item in ok}
+    if len(serials) > 1 or "cluster-mismatch" in serials:
+        return {
+            "success": True,
+            "serial_number": "cluster-mismatch",
+            "message": "Cluster nodes do not have the same certificate.",
+        }
+    result = dict(ok[0])
+    if bad:
+        unread = "; ".join(item.get("message") or "unreadable" for item in bad)
+        result["message"] = f"Some cluster nodes could not be read. {unread}"
+    return result
 
 
 def _deploy_result(success: bool, message: str, stage: str, nodes: list | None = None) -> dict:
