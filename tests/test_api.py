@@ -176,6 +176,9 @@ class TestSetupPage:
         assert "Issue and install" in r.text
         assert "<details" in r.text
         assert 'id="cp-certs"' in r.text
+        assert 'id="callback"' in r.text
+        assert "Set EDGE_DOMAIN in the .env file" in r.text
+        assert "Deploy" in r.text
 
     def test_docs_remain_available(self, app_client):
         r = app_client.get("/docs", follow_redirects=False)

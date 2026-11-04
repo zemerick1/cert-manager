@@ -125,6 +125,20 @@
     .result.warn { background: var(--warn-bg); color: var(--warn); }
     ol.guide, ul.plain { margin: 0.4rem 0 0; padding-left: 1.2rem; }
     ul.plain { list-style: disc; }
+    ul.rows { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+    ul.rows li {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 0.8rem;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0;
+      padding: 0.55rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    ul.rows li span { flex: 1 1 16rem; }
+    ul.rows button { flex: 0 0 auto; padding: 0.35rem 0.7rem; }
+    #callback { margin-bottom: 0.8rem; }
     pre.progress {
       margin: 0.7rem 0 0;
       max-height: 12rem;
@@ -153,15 +167,17 @@
         <span id="status-summary" class="summary-note">Loading…</span>
       </summary>
       <div class="panel">
-        <ul class="plain" id="status-certs"></ul>
+        <div id="callback" class="banner" role="status">Checking the address ClearPass will use to download the certificate…</div>
+        <p class="hint">Saved certificates</p>
+        <ul class="rows" id="status-certs"></ul>
+        <div id="status-result" class="result" hidden></div>
+        <p class="hint">ClearPass targets</p>
         <ul class="plain" id="status-services"></ul>
         <div class="actions">
           <button type="button" id="refresh">Refresh</button>
         </div>
       </div>
     </details>
-
-    <div id="callback" class="banner" role="status">Checking the address ClearPass will use to download the certificate…</div>
 
     <details class="card" id="card-cf">
       <summary>
@@ -415,13 +431,10 @@
         (health.certs_expiring_soon || 0) + " expiring within 30 days.",
       ];
       $("status-summary").textContent = summary.join(" ");
-      fillList($("status-certs"), state.certs.map((cert) => {
-        const days = cert.days_remaining == null ? "unknown expiry" : cert.days_remaining + " days left";
-        return cert.name + " — " + days + (cert.domains && cert.domains.length ? " — " + cert.domains.join(", ") : "");
-      }));
-      if (!state.certs.length) fillList($("status-certs"), ["No certificates yet."]);
+      renderSavedCerts();
       fillList($("status-services"), state.services.map((service) => {
-        return service.name + " — " + service.cert_usage + " on " + service.host;
+        const pack = service.cert_pack_id ? " — certificate " + service.cert_pack_id : " — no certificate assigned";
+        return service.name + " — " + service.cert_usage + " on " + service.host + pack;
       }));
       if (!state.services.length) fillList($("status-services"), ["No ClearPass targets yet."]);
 
@@ -438,15 +451,91 @@
 
       const banner = $("callback");
       const base = health.callback_base || "http://localhost";
+      const download = "ClearPass will download the certificate from " + base + "/download/… on port 80. Each cluster node must be able to open that address. Set EDGE_DOMAIN in the .env file to the hostname or IP of this Docker host, then restart the container.";
       if (callbackBlocked()) {
         banner.className = "banner bad";
-        banner.textContent = "Install is turned off. ClearPass downloads the certificate from " + base + "/download/… on port 80, and that address is " + (callbackHost() || "empty") + ". Set EDGE_DOMAIN to a hostname every cluster node can open on port 80, then restart this service.";
+        banner.textContent = "Install is turned off. " + download + " The current value is " + (callbackHost() || "empty") + ".";
       } else {
         banner.className = "banner ok";
-        banner.textContent = "ClearPass will download the certificate from " + base + "/download/… on port 80. Each cluster node must be able to open that address.";
+        banner.textContent = download;
       }
       updateIssueButton();
       openNextCard();
+    }
+
+    function renderSavedCerts() {
+      const list = $("status-certs");
+      list.replaceChildren();
+      if (!state.certs.length) {
+        const empty = document.createElement("li");
+        empty.textContent = "No certificates yet.";
+        list.appendChild(empty);
+        return;
+      }
+      const usedBy = new Map();
+      for (const service of state.services) {
+        if (!service.cert_pack_id) continue;
+        const names = usedBy.get(service.cert_pack_id) || [];
+        names.push(service.name);
+        usedBy.set(service.cert_pack_id, names);
+      }
+      const certs = state.certs.slice().sort((a, b) => {
+        const aUsed = usedBy.has(a.name) ? 0 : 1;
+        const bUsed = usedBy.has(b.name) ? 0 : 1;
+        if (aUsed !== bUsed) return aUsed - bUsed;
+        return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+      });
+      for (const cert of certs) {
+        const li = document.createElement("li");
+        const text = document.createElement("span");
+        const days = cert.days_remaining == null ? "unknown expiry" : cert.days_remaining + " days left";
+        const domains = cert.domains && cert.domains.length ? cert.domains.join(", ") : cert.name;
+        const targets = usedBy.get(cert.name);
+        const use = targets
+          ? "The ClearPass target uses this certificate."
+          : "Saved here. No ClearPass target uses this certificate.";
+        text.textContent = cert.name + " — " + days + " — " + domains + ". " + use;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Deploy";
+        button.disabled = state.busy || !state.services.length || callbackBlocked();
+        button.addEventListener("click", () => deploySaved(cert.name));
+        li.append(text, button);
+        list.appendChild(li);
+      }
+    }
+
+    function targetForPack(packName) {
+      const assigned = state.services.filter((service) => service.cert_pack_id === packName);
+      if (assigned.length) return assigned[0];
+      if (state.services.length === 1) return state.services[0];
+      return null;
+    }
+
+    async function deploySaved(packName) {
+      const service = targetForPack(packName);
+      if (!service) {
+        setResult($("status-result"), "bad", "More than one ClearPass target is saved, and none of them use this certificate.");
+        return;
+      }
+      state.busy = true;
+      updateIssueButton();
+      renderSavedCerts();
+      try {
+        if (service.cert_pack_id !== packName) {
+          await api("PATCH", "/api/services/" + encodeURIComponent(service.name), { cert_pack_id: packName });
+        }
+        const deployed = await api("POST", "/api/services/" + encodeURIComponent(service.name) + "/deploy");
+        const kind = deployed.success ? (deployed.message && deployed.message.includes("CA trust") ? "warn" : "ok") : "bad";
+        const stage = deployed.data && deployed.data.stage ? " (" + deployed.data.stage + ")" : "";
+        setResult($("status-result"), kind, (deployed.message || "Deploy finished.") + stage);
+      } catch (error) {
+        setResult($("status-result"), "bad", error.message);
+      } finally {
+        state.busy = false;
+        updateIssueButton();
+        await refresh().catch(showLoadError);
+      }
     }
 
     function openNextCard() {

@@ -9,8 +9,9 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-      # Port 5050 for ClearPass PFX callback (optional)
-      # - "5050:8000"
+      # ClearPass fetches http://EDGE_DOMAIN/download/… on port 80, with no port in the URL.
+      # The app process listens on 8000; Docker publishes that same process on port 80.
+      - "80:8000"
     environment:
       - EDGE_DOMAIN=${EDGE_DOMAIN:-localhost}
       - DATA_DIR=/app/data
