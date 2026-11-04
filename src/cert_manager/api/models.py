@@ -112,6 +112,7 @@ class ClearPassCredential(BaseModel):
     id: str
     name: str
     host: str
+    additional_nodes: list[str] = []
 
 
 class OperationResult(BaseModel):
@@ -175,10 +176,14 @@ class AcmeCredentialInput(BaseModel):
 class ClearPassCredentialInput(BaseModel):
     id: str = Field(..., description="Unique credential ID")
     name: str = Field(..., description="Display name")
-    host: str = Field(..., description="ClearPass host")
+    host: str = Field(..., description="ClearPass publisher hostname")
     client_id: str = Field(..., description="OAuth client ID")
     client_secret: str = Field(..., description="OAuth client secret")
     verify_ssl: bool = False
+    additional_nodes: list[str] = Field(
+        default_factory=list,
+        description="Subscriber hostnames contacted in addition to the publisher",
+    )
 
 
 class AppSettingsInput(BaseModel):

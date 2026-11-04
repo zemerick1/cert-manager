@@ -25,6 +25,45 @@ class TestCertEndpoints:
         r = app_client.get("/api/certs/nope")
         assert r.status_code == 404
 
+    def test_upload_stores_a_matching_pair(self, app_client):
+        from tests.test_cert_validator import _generate_self_signed
+
+        cert_pem, key_pem, _, _ = _generate_self_signed(sans=["clearpass.example.com"])
+        r = app_client.post(
+            "/api/certs/upload",
+            json={
+                "pack_name": "owned",
+                "fullchain": cert_pem.decode(),
+                "privkey": key_pem.decode(),
+                "is_edge": False,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["success"] is True
+        pack = next(item for item in app_client.get("/api/certs").json() if item["name"] == "owned")
+        assert pack["source"] == "manual"
+        assert pack["auto_renew"] is False
+        assert "clearpass.example.com" in pack["domains"]
+
+    def test_upload_rejects_a_mismatched_key(self, app_client):
+        from tests.test_cert_validator import _generate_self_signed
+
+        cert_pem, _, _, _ = _generate_self_signed()
+        _, other_key, _, _ = _generate_self_signed()
+        r = app_client.post(
+            "/api/certs/upload",
+            json={
+                "pack_name": "owned",
+                "fullchain": cert_pem.decode(),
+                "privkey": other_key.decode(),
+                "is_edge": False,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["success"] is False
+        assert "does not match" in r.json()["message"]
+        assert app_client.get("/api/certs").json() == []
+
 
 class TestServiceEndpoints:
     def test_list_empty(self, app_client):
@@ -128,7 +167,26 @@ class TestCredentialEndpoints:
         assert r.status_code == 200
 
         r = app_client.get("/api/credentials/clearpass")
-        assert any(c["id"] == "cp-test" for c in r.json())
+        saved = next(c for c in r.json() if c["id"] == "cp-test")
+        assert saved["host"] == "cp.example.com"
+        assert saved["additional_nodes"] == []
+
+    def test_clearpass_credential_keeps_subscriber_hosts(self, app_client):
+        app_client.post(
+            "/api/credentials/clearpass",
+            json={
+                "id": "cp-cluster",
+                "name": "Cluster",
+                "host": "cppm-node1.example.com",
+                "client_id": "cid",
+                "client_secret": "csec",
+                "additional_nodes": ["cppm-node2.example.com", "cppm-node3.example.com"],
+            },
+        )
+        r = app_client.get("/api/credentials/clearpass")
+        saved = next(c for c in r.json() if c["id"] == "cp-cluster")
+        assert saved["additional_nodes"] == ["cppm-node2.example.com", "cppm-node3.example.com"]
+        assert "csec" not in r.text
 
     def test_delete_clearpass(self, app_client):
         app_client.post(
@@ -179,6 +237,8 @@ class TestSetupPage:
         assert 'id="callback"' in r.text
         assert "Set EDGE_DOMAIN in the .env file" in r.text
         assert "Deploy" in r.text
+        assert "Other cluster nodes" in r.text
+        assert "Save and install" in r.text
 
     def test_docs_remain_available(self, app_client):
         r = app_client.get("/docs", follow_redirects=False)

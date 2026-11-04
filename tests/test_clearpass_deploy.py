@@ -124,6 +124,28 @@ def test_ca_trust_error_stays_visible_when_install_succeeds(monkeypatch):
     assert result["nodes"][0]["ca_trust_errors"] == ["Failed to add CA R3 [403]: denied"]
 
 
+def test_https_health_flags_nodes_with_different_serials(monkeypatch):
+    handler = ArubaClearPassHandler(
+        {
+            "name": "cppm",
+            "host": "cppm-node1.example.com",
+            "client_id": "cert-manager",
+            "client_secret": "s3cret",
+            "cert_usage": "HTTPS(RSA)",
+            "additional_nodes": ["cppm-node2.example.com"],
+        }
+    )
+
+    def fake_tls(self, usage, host=None):
+        serial = "AAA" if host and "node1" in host else "BBB"
+        return {"success": True, "serial_number": serial}
+
+    monkeypatch.setattr(ArubaClearPassHandler, "_check_via_tls", fake_tls)
+    result = handler.check_remote_expiry()
+    assert result["success"] is True
+    assert result["serial_number"] == "cluster-mismatch"
+
+
 def test_missing_config_is_its_own_stage():
     handler = ArubaClearPassHandler({"name": "cppm", "host": "clearpass.example.com"})
     result = handler.deploy("/tmp/fullchain.pem", "/tmp/privkey.pem")
