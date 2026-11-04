@@ -3,24 +3,29 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from cert_manager.acme.cloudflare import test_cloudflare_token
 from cert_manager.api.models import (
     AcmeCredential,
     AcmeCredentialInput,
     AppSettingsInput,
+    CertJob,
     CertPack,
     CertRequestInput,
     CertUploadInput,
+    ClearPassConnectionTestInput,
     ClearPassCredential,
     ClearPassCredentialInput,
+    CloudflareTokenTestInput,
     HealthResponse,
     ManagedService,
     OperationResult,
     ServiceInput,
     ServiceUpdateInput,
 )
-from cert_manager.handlers.clearpass import ArubaClearPassHandler
+from cert_manager.handlers.clearpass import ArubaClearPassHandler, get_callback_base
+from cert_manager.services.cert_jobs import JobInProgress, run_renew_job, run_request_job
 
 logger = logging.getLogger("cert_manager.api")
 
@@ -64,6 +69,7 @@ def health_check(ctx: Context):
         next_renewal_check=(
             scheduler.next_check.isoformat() if scheduler and scheduler.next_check else None
         ),
+        callback_base=get_callback_base(),
     )
 
 
@@ -77,6 +83,77 @@ def list_cert_packs(ctx: Context):
     return [CertPack(**p) for p in packs]
 
 
+def _cert_request_fields(data: CertRequestInput) -> dict:
+    """Maps a certificate request body onto AcmeManager.request_certificate."""
+    return {
+        "pack_name": data.pack_name,
+        "domains": data.domains,
+        "provider": data.provider.value,
+        "credential_id": data.credential_id,
+        "email": data.email,
+        "challenge_type": data.challenge_type.value,
+        "key_type": data.key_type.value,
+        "is_edge": data.is_edge,
+    }
+
+
+@router.post("/certs/jobs", response_model=CertJob, tags=["Certificates"])
+def start_cert_job(data: CertRequestInput, ctx: Context, background: BackgroundTasks):
+    """Starts a certificate request and returns before Certbot finishes.
+
+    Poll GET /certs/jobs/{job_id} for progress. POST /certs/request still
+    waits for Certbot and returns the final result.
+    """
+    job = _create_job(ctx, data.pack_name, "request")
+    background.add_task(
+        run_request_job,
+        ctx["jobs"],
+        job["job_id"],
+        ctx["acme"],
+        _cert_request_fields(data),
+    )
+    return CertJob(**job)
+
+
+@router.get("/certs/jobs", response_model=list[CertJob], tags=["Certificates"])
+def list_cert_jobs(ctx: Context):
+    """Lists certificate jobs started in this process, newest first."""
+    return [CertJob(**job) for job in ctx["jobs"].list_jobs()]
+
+
+@router.get("/certs/jobs/{job_id}", response_model=CertJob, tags=["Certificates"])
+def get_cert_job(job_id: str, ctx: Context):
+    """Returns one certificate job, including progress lines."""
+    job = ctx["jobs"].get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Certificate job '{job_id}' not found")
+    return CertJob(**job)
+
+
+@router.post("/certs/{pack_name}/jobs", response_model=CertJob, tags=["Certificates"])
+def start_renew_job(pack_name: str, ctx: Context, background: BackgroundTasks):
+    """Starts a renewal and returns before Certbot finishes."""
+    meta = ctx["config"].get_cert_pack_meta(pack_name)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Certificate pack '{pack_name}' not found")
+    if meta.get("source") != "acme":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pack '{pack_name}' is not an ACME certificate.",
+        )
+    job = _create_job(ctx, pack_name, "renew")
+    background.add_task(run_renew_job, ctx["jobs"], job["job_id"], ctx["acme"], pack_name)
+    return CertJob(**job)
+
+
+def _create_job(ctx: dict, pack_name: str, kind: str) -> dict:
+    """Creates a job or raises 409 when one is already active for the pack."""
+    try:
+        return ctx["jobs"].create(pack_name, kind)
+    except JobInProgress as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
 @router.get("/certs/{pack_name}", response_model=CertPack, tags=["Certificates"])
 def get_cert_pack(pack_name: str, ctx: Context):
     """Gets a specific certificate pack by name."""
@@ -88,17 +165,12 @@ def get_cert_pack(pack_name: str, ctx: Context):
 
 @router.post("/certs/request", response_model=OperationResult, tags=["Certificates"])
 def request_certificate(data: CertRequestInput, ctx: Context):
-    """Requests a new ACME certificate from Let's Encrypt."""
-    result = ctx["acme"].request_certificate(
-        pack_name=data.pack_name,
-        domains=data.domains,
-        provider=data.provider.value,
-        credential_id=data.credential_id,
-        email=data.email,
-        challenge_type=data.challenge_type.value,
-        key_type=data.key_type.value,
-        is_edge=data.is_edge,
-    )
+    """Requests a new ACME certificate from Let's Encrypt.
+
+    This call blocks until Certbot finishes. POST /certs/jobs returns
+    immediately and reports progress on GET /certs/jobs/{job_id}.
+    """
+    result = ctx["acme"].request_certificate(**_cert_request_fields(data))
     return OperationResult(**result)
 
 
@@ -230,11 +302,15 @@ def deploy_to_service(service_name: str, ctx: Context):
             service["client_secret"] = cred.get("client_secret")
 
     handler = ArubaClearPassHandler(service)
-    success = handler.deploy(paths[0], paths[1])
+    result = handler.deploy(paths[0], paths[1])
 
     return OperationResult(
-        success=success,
-        message="Deployment successful" if success else "Deployment failed",
+        success=bool(result.get("success")),
+        message=result.get("message") or "Deployment failed.",
+        data={
+            "stage": result.get("stage"),
+            "nodes": result.get("nodes", []),
+        },
     )
 
 
@@ -285,6 +361,34 @@ def list_acme_credentials(ctx: Context):
     ]
 
 
+@router.post("/credentials/acme/test", response_model=OperationResult, tags=["Credentials"])
+def test_acme_credential_inline(data: CloudflareTokenTestInput):
+    """Tests a Cloudflare token without saving it."""
+    return _probe_result(test_cloudflare_token(data.api_token))
+
+
+@router.post(
+    "/credentials/acme/{credential_id}/test",
+    response_model=OperationResult,
+    tags=["Credentials"],
+)
+def test_acme_credential(credential_id: str, ctx: Context):
+    """Tests a saved ACME credential. Live checks are implemented for Cloudflare."""
+    cred = ctx["config"].get_acme_credential(credential_id)
+    if not cred:
+        raise HTTPException(status_code=404, detail=f"Credential '{credential_id}' not found")
+    if cred.get("provider") != "cloudflare":
+        provider = cred.get("provider") or "unknown"
+        return OperationResult(
+            success=False,
+            message=(
+                "Connection test is available for Cloudflare tokens. "
+                f"This credential is {provider}."
+            ),
+        )
+    return _probe_result(test_cloudflare_token(cred.get("api_token") or ""))
+
+
 @router.post("/credentials/acme", response_model=OperationResult, tags=["Credentials"])
 def add_acme_credential(data: AcmeCredentialInput, ctx: Context):
     """Adds a new ACME credential."""
@@ -328,6 +432,41 @@ def list_clearpass_credentials(ctx: Context):
     ]
 
 
+@router.post("/credentials/clearpass/test", response_model=OperationResult, tags=["Credentials"])
+def test_clearpass_credential_inline(data: ClearPassConnectionTestInput):
+    """Tests ClearPass OAuth credentials without saving them."""
+    handler = ArubaClearPassHandler(
+        {
+            "name": "credential-test",
+            "host": data.host,
+            "client_id": data.client_id,
+            "client_secret": data.client_secret,
+        }
+    )
+    return _probe_result(handler.test_connection())
+
+
+@router.post(
+    "/credentials/clearpass/{credential_id}/test",
+    response_model=OperationResult,
+    tags=["Credentials"],
+)
+def test_clearpass_credential(credential_id: str, ctx: Context):
+    """Tests a saved ClearPass credential by signing in and listing cluster nodes."""
+    cred = ctx["config"].get_clearpass_credential(credential_id)
+    if not cred:
+        raise HTTPException(status_code=404, detail=f"Credential '{credential_id}' not found")
+    handler = ArubaClearPassHandler(
+        {
+            "name": cred.get("name", credential_id),
+            "host": cred.get("host", ""),
+            "client_id": cred.get("client_id", ""),
+            "client_secret": cred.get("client_secret", ""),
+        }
+    )
+    return _probe_result(handler.test_connection())
+
+
 @router.post("/credentials/clearpass", response_model=OperationResult, tags=["Credentials"])
 def add_clearpass_credential(data: ClearPassCredentialInput, ctx: Context):
     """Adds a new ClearPass credential."""
@@ -366,6 +505,15 @@ def update_settings(data: AppSettingsInput, ctx: Context):
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
     ctx["config"].update_app_settings(update_data)
     return OperationResult(success=True, message="Settings updated")
+
+
+def _probe_result(result: dict) -> OperationResult:
+    """Maps a connection-test dict onto the shared operation response."""
+    return OperationResult(
+        success=bool(result.get("success")),
+        message=result.get("message", ""),
+        data=result.get("data"),
+    )
 
 
 # --- ACME Providers ---

@@ -1,5 +1,7 @@
 # Certificate Manager
 
+An unofficial fork of [nowireless4u/cert-manager](https://github.com/nowireless4u/cert-manager).
+
 A standalone certificate lifecycle management application with ACME (Let's Encrypt) support and Aruba ClearPass deployment capabilities.
 
 ## Features
@@ -27,6 +29,9 @@ nano .env
 
 # Start the service
 docker compose up -d
+
+# Open the setup page
+# http://localhost:8000/
 
 # View logs
 docker compose logs -f
@@ -78,7 +83,9 @@ cert-manager/
 
 ## API Documentation
 
-Once running, access the interactive API documentation at:
+Once running, open the setup page at http://localhost:8000/. It saves a Cloudflare token, a ClearPass API client, and then issues a certificate and installs it.
+
+Interactive API documentation is still available at:
 
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
@@ -89,18 +96,25 @@ Once running, access the interactive API documentation at:
 |--------|----------|-------------|
 | GET | `/api/health` | Health check with status info |
 | GET | `/api/certs` | List all certificate packs |
-| POST | `/api/certs/request` | Request new ACME certificate |
+| POST | `/api/certs/request` | Request new ACME certificate (blocks until Certbot finishes) |
+| POST | `/api/certs/jobs` | Start a certificate request and return immediately |
+| GET | `/api/certs/jobs/{job_id}` | Poll certificate job status and Certbot progress |
+| POST | `/api/certs/{name}/jobs` | Start a renewal job |
 | POST | `/api/certs/upload` | Upload manual certificate |
-| POST | `/api/certs/{name}/renew` | Renew existing ACME certificate |
+| POST | `/api/certs/{name}/renew` | Renew existing ACME certificate (blocks) |
 | DELETE | `/api/certs/{name}` | Delete certificate pack |
 | GET | `/api/services` | List managed services |
 | POST | `/api/services` | Add managed service |
-| POST | `/api/services/{name}/deploy` | Deploy cert to service |
+| POST | `/api/services/{name}/deploy` | Deploy cert to service and return the failing step |
 | GET | `/api/services/{name}/health` | Check service health |
 | GET | `/api/credentials/acme` | List ACME credentials |
 | POST | `/api/credentials/acme` | Add ACME credential |
+| POST | `/api/credentials/acme/test` | Test a Cloudflare token without saving it |
+| POST | `/api/credentials/acme/{id}/test` | Test a saved Cloudflare credential |
 | GET | `/api/credentials/clearpass` | List ClearPass credentials |
 | POST | `/api/credentials/clearpass` | Add ClearPass credential |
+| POST | `/api/credentials/clearpass/test` | Test ClearPass login and read installed certificate names |
+| POST | `/api/credentials/clearpass/{id}/test` | Test a saved ClearPass credential and read installed certificate names |
 | GET | `/api/settings` | Get app settings |
 | PATCH | `/api/settings` | Update app settings |
 

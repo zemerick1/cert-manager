@@ -166,8 +166,337 @@ class TestProvidersEndpoint:
         assert "standalone" in ids
 
 
-class TestRootRedirect:
-    def test_root_redirects_to_docs(self, app_client):
+class TestSetupPage:
+    def test_root_serves_setup_page(self, app_client):
         r = app_client.get("/", follow_redirects=False)
-        assert r.status_code == 307
-        assert "/docs" in r.headers.get("location", "")
+        assert r.status_code == 200
+        assert "text/html" in r.headers.get("content-type", "")
+        assert "Cloudflare" in r.text
+        assert "ClearPass" in r.text
+        assert "Issue and install" in r.text
+        assert "<details" in r.text
+        assert 'id="cp-certs"' in r.text
+
+    def test_docs_remain_available(self, app_client):
+        r = app_client.get("/docs", follow_redirects=False)
+        assert r.status_code == 200
+
+    def test_health_reports_callback_base(self, app_client, monkeypatch):
+        monkeypatch.setenv("EDGE_DOMAIN", "certs.example.com")
+        r = app_client.get("/api/health")
+        assert r.json()["callback_base"] == "http://certs.example.com"
+
+
+class _Resp:
+    """Minimal requests response for connection-test fakes."""
+
+    def __init__(self, status_code, body=None, text=""):
+        self.status_code = status_code
+        self._body = body
+        self.text = text if text or body is None else str(body)
+
+    def json(self):
+        if isinstance(self._body, dict):
+            return self._body
+        raise ValueError("no json")
+
+
+_CERT_REQUEST = {
+    "pack_name": "my-domain",
+    "domains": ["example.com"],
+    "provider": "cloudflare",
+    "credential_id": "cloudflare-main",
+    "email": "admin@example.com",
+    "challenge_type": "dns-01",
+    "key_type": "ecdsa",
+    "is_edge": False,
+}
+
+
+class TestCertJobs:
+    def test_blocking_request_still_returns_result(self, app_client):
+        from cert_manager.api import routes
+
+        def fake(**kwargs):
+            assert kwargs["pack_name"] == "my-domain"
+            assert "progress_callback" not in kwargs
+            return {
+                "success": True,
+                "message": "Certificate obtained and saved as 'my-domain'.",
+                "pack_name": "my-domain",
+            }
+
+        routes._app_context["acme"].request_certificate = fake
+        r = app_client.post("/api/certs/request", json=_CERT_REQUEST)
+        assert r.status_code == 200
+        assert r.json()["success"] is True
+        assert "my-domain" in r.json()["message"]
+
+    def test_job_returns_pending_then_records_progress(self, app_client):
+        from cert_manager.api import routes
+
+        def fake(**kwargs):
+            kwargs["progress_callback"]("waiting for DNS")
+            return {
+                "success": True,
+                "message": "Certificate obtained and saved as 'my-domain'.",
+            }
+
+        routes._app_context["acme"].request_certificate = fake
+        started = app_client.post("/api/certs/jobs", json=_CERT_REQUEST)
+        assert started.status_code == 200
+        body = started.json()
+        assert body["status"] == "PENDING"
+        assert body["kind"] == "request"
+        assert body["progress"] == []
+
+        polled = app_client.get(f"/api/certs/jobs/{body['job_id']}")
+        assert polled.status_code == 200
+        finished = polled.json()
+        assert finished["status"] == "SUCCESS"
+        assert finished["success"] is True
+        assert "waiting for DNS" in finished["progress"]
+
+        listed = app_client.get("/api/certs/jobs")
+        assert listed.status_code == 200
+        assert listed.json()[0]["job_id"] == body["job_id"]
+
+    def test_job_records_exception(self, app_client):
+        from cert_manager.api import routes
+
+        def fake(**kwargs):
+            raise RuntimeError("certbot missing")
+
+        routes._app_context["acme"].request_certificate = fake
+        started = app_client.post("/api/certs/jobs", json=_CERT_REQUEST)
+        polled = app_client.get(f"/api/certs/jobs/{started.json()['job_id']}")
+        assert polled.json()["status"] == "FAILED"
+        assert "certbot missing" in polled.json()["message"]
+
+    def test_second_job_for_same_pack_conflicts(self, app_client):
+        from cert_manager.api import routes
+
+        routes._app_context["jobs"].create("my-domain", "request")
+        r = app_client.post("/api/certs/jobs", json=_CERT_REQUEST)
+        assert r.status_code == 409
+        assert "my-domain" in r.json()["detail"]
+
+    def test_unknown_job(self, app_client):
+        r = app_client.get("/api/certs/jobs/does-not-exist")
+        assert r.status_code == 404
+
+    def test_renew_job_rejects_manual_pack(self, app_client):
+        from cert_manager.api import routes
+
+        routes._app_context["config"].set_cert_pack_meta("uploaded", {"source": "manual"})
+        r = app_client.post("/api/certs/uploaded/jobs")
+        assert r.status_code == 400
+
+    def test_renew_job_missing_pack(self, app_client):
+        r = app_client.post("/api/certs/missing/jobs")
+        assert r.status_code == 404
+
+    def test_renew_job_reports_progress(self, app_client):
+        from cert_manager.api import routes
+
+        routes._app_context["config"].set_cert_pack_meta(
+            "radius-cert",
+            {"source": "acme", "domains": ["radius.example.com"]},
+        )
+
+        def fake(pack_name, progress_callback=None):
+            progress_callback("renewing")
+            return {"success": True, "message": "renewed"}
+
+        routes._app_context["acme"].renew_certificate = fake
+        started = app_client.post("/api/certs/radius-cert/jobs")
+        assert started.json()["status"] == "PENDING"
+        polled = app_client.get(f"/api/certs/jobs/{started.json()['job_id']}")
+        assert polled.json()["status"] == "SUCCESS"
+        assert polled.json()["kind"] == "renew"
+        assert "renewing" in polled.json()["progress"]
+
+
+class TestCredentialTests:
+    def test_cloudflare_token_ok(self, app_client, monkeypatch):
+        def fake_get(url, headers=None, params=None, timeout=None):
+            assert headers["Authorization"] == "Bearer super-secret-token"
+            if url.endswith("/user/tokens/verify"):
+                return _Resp(200, {"success": True, "result": {"status": "active"}})
+            if url.endswith("/zones"):
+                return _Resp(
+                    200,
+                    {"success": True, "result": [{"id": "z1", "name": "example.com"}]},
+                )
+            if url.endswith("/dns_records"):
+                return _Resp(200, {"success": True, "result": []})
+            raise AssertionError(url)
+
+        monkeypatch.setattr("cert_manager.acme.cloudflare.requests.get", fake_get)
+        r = app_client.post(
+            "/api/credentials/acme/test",
+            json={"api_token": "super-secret-token"},
+        )
+        body = r.json()
+        assert r.status_code == 200
+        assert body["success"] is True
+        assert "example.com" in body["message"]
+        assert body["data"]["dns_read"] is True
+        assert "super-secret-token" not in r.text
+
+    def test_cloudflare_token_rejected(self, app_client, monkeypatch):
+        monkeypatch.setattr(
+            "cert_manager.acme.cloudflare.requests.get",
+            lambda *args, **kwargs: _Resp(401, {"success": False}),
+        )
+        r = app_client.post("/api/credentials/acme/test", json={"api_token": "nope"})
+        assert r.json()["success"] is False
+        assert "rejected" in r.json()["message"]
+
+    def test_saved_cloudflare_credential(self, app_client, monkeypatch):
+        app_client.post(
+            "/api/credentials/acme",
+            json={
+                "id": "cf-test",
+                "name": "Cloudflare",
+                "provider": "cloudflare",
+                "api_token": "saved-token",
+            },
+        )
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            assert headers["Authorization"] == "Bearer saved-token"
+            return _Resp(401, {"success": False})
+
+        monkeypatch.setattr("cert_manager.acme.cloudflare.requests.get", fake_get)
+        r = app_client.post("/api/credentials/acme/cf-test/test")
+        assert r.status_code == 200
+        assert r.json()["success"] is False
+        assert "saved-token" not in r.text
+
+    def test_non_cloudflare_credential_is_not_probed(self, app_client):
+        app_client.post(
+            "/api/credentials/acme",
+            json={
+                "id": "aws",
+                "name": "AWS",
+                "provider": "route53",
+                "access_key_id": "AKIA",
+                "secret_access_key": "secret",
+            },
+        )
+        r = app_client.post("/api/credentials/acme/aws/test")
+        assert r.json()["success"] is False
+        assert "route53" in r.json()["message"]
+
+    def test_missing_acme_credential(self, app_client):
+        r = app_client.post("/api/credentials/acme/missing/test")
+        assert r.status_code == 404
+
+    def test_clearpass_oauth_error_hides_secret(self, app_client, monkeypatch):
+        def fake_post(url, json=None, **kwargs):
+            assert json["client_secret"] == "s3cret"
+            assert url == "https://clearpass.example.com/api/oauth"
+            return _Resp(401, text='{"error":"invalid_client"}')
+
+        monkeypatch.setattr("cert_manager.handlers.clearpass.requests.post", fake_post)
+        r = app_client.post(
+            "/api/credentials/clearpass/test",
+            json={
+                "host": "clearpass.example.com",
+                "client_id": "cert-manager",
+                "client_secret": "s3cret",
+            },
+        )
+        body = r.json()
+        assert body["success"] is False
+        assert "401" in body["message"]
+        assert "invalid_client" in body["message"]
+        assert body["data"]["stage"] == "oauth"
+        assert "s3cret" not in r.text
+
+    def test_saved_clearpass_credential_lists_nodes(self, app_client, monkeypatch):
+        app_client.post(
+            "/api/credentials/clearpass",
+            json={
+                "id": "cp-test",
+                "name": "Prod",
+                "host": "cp.example.com",
+                "client_id": "cid",
+                "client_secret": "stored-secret",
+            },
+        )
+
+        def fake_post(url, json=None, **kwargs):
+            assert json["client_secret"] == "stored-secret"
+            return _Resp(200, {"access_token": "tok"})
+
+        def fake_get(url, headers=None, **kwargs):
+            assert headers["Authorization"] == "Bearer tok"
+            return _Resp(
+                200,
+                {"_embedded": {"items": [{"name": "cppm1", "server_uuid": "u1"}]}},
+            )
+
+        monkeypatch.setattr("cert_manager.handlers.clearpass.requests.post", fake_post)
+        monkeypatch.setattr("cert_manager.handlers.clearpass.requests.get", fake_get)
+        r = app_client.post("/api/credentials/clearpass/cp-test/test")
+        body = r.json()
+        assert body["success"] is True
+        assert body["data"]["servers"] == ["cppm1"]
+        certificates = body["data"]["certificates"]
+        assert [row["label"] for row in certificates] == [
+            "HTTPS (RSA)",
+            "HTTPS (ECC)",
+            "RADIUS / EAP",
+            "RadSec",
+            "Database",
+        ]
+        assert all(row["names"] == [] for row in certificates)
+        assert "tok" not in r.text
+        assert "stored-secret" not in r.text
+
+
+class TestDeployResult:
+    def test_deploy_returns_stage_and_message(self, app_client, monkeypatch):
+        from cert_manager.api import routes
+        from cert_manager.handlers.clearpass import ArubaClearPassHandler
+
+        app_client.post(
+            "/api/services",
+            json={
+                "name": "cppm",
+                "host": "cp.example.com",
+                "type": "clearpass",
+                "cert_pack_id": "my-domain",
+                "cert_usage": "HTTPS(RSA)",
+            },
+        )
+        routes._app_context["cert_store"].get_pack_paths = lambda name: (
+            "/tmp/fullchain.pem",
+            "/tmp/privkey.pem",
+        )
+
+        def fake_deploy(self, cert_path, key_path):
+            return {
+                "success": False,
+                "message": "ClearPass authentication failed (401): invalid_client",
+                "stage": "oauth",
+                "nodes": [
+                    {
+                        "host": "https://cp.example.com",
+                        "success": False,
+                        "stage": "oauth",
+                        "message": "ClearPass authentication failed (401): invalid_client",
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(ArubaClearPassHandler, "deploy", fake_deploy)
+        r = app_client.post("/api/services/cppm/deploy")
+        body = r.json()
+        assert r.status_code == 200
+        assert body["success"] is False
+        assert body["data"]["stage"] == "oauth"
+        assert "401" in body["message"]
+        assert "invalid_client" in body["message"]

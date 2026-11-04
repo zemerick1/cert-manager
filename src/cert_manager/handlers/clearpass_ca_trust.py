@@ -32,18 +32,24 @@ def ensure_ca_trust(
     cert_path: str,
     log: logging.Logger,
     ca_usages: list[str] | None = None,
-) -> None:
-    """Ensures CA certificates from the chain are in ClearPass trust list."""
+) -> list[str]:
+    """Ensures CA certificates from the chain are in ClearPass trust list.
+
+    Returns error strings for trust-list updates that failed. An empty
+    list means every CA was already trusted or was uploaded. Lookup misses
+    are not errors; the missing CA is uploaded instead.
+    """
     if not cert_path or not os.path.exists(cert_path):
-        return
+        return []
 
     if ca_usages is None:
         ca_usages = ["Others"]
 
     ca_certs = _extract_ca_certs(cert_path, log)
     if not ca_certs:
-        return
+        return []
 
+    errors: list[str] = []
     for ca_cert in ca_certs:
         cn = _get_cert_cn(ca_cert)
         display_name = cn or ca_cert.subject.rfc4514_string()
@@ -51,7 +57,7 @@ def ensure_ca_trust(
 
         existing = _lookup_trust_entry(host, headers, subject_dn, log)
         if existing:
-            _ensure_usage_types(
+            error = _ensure_usage_types(
                 host,
                 headers,
                 existing,
@@ -60,7 +66,10 @@ def ensure_ca_trust(
                 log,
             )
         else:
-            _upload_ca_cert(host, headers, ca_cert, display_name, log, ca_usages)
+            error = _upload_ca_cert(host, headers, ca_cert, display_name, log, ca_usages)
+        if error:
+            errors.append(error)
+    return errors
 
 
 def _build_subject_dn(cert: x509.Certificate) -> str:
@@ -191,19 +200,23 @@ def _ensure_usage_types(
     required_usages: list[str],
     display_name: str,
     log: logging.Logger,
-) -> None:
-    """Ensures an existing trust list entry has the required usage types."""
+) -> str | None:
+    """Ensures an existing trust list entry has the required usage types.
+
+    Returns an error string when the update fails, otherwise None.
+    """
     current_usages = set(entry.get("cert_usage", []))
     missing = [u for u in required_usages if u not in current_usages]
 
     if not missing:
         log.info(f"CA already trusted with correct usage: {display_name}")
-        return
+        return None
 
     entry_id = entry.get("id")
     if not entry_id:
-        log.error(f"Cannot update CA trust entry (no id): {display_name}")
-        return
+        message = f"Cannot update CA trust entry (no id): {display_name}"
+        log.error(message)
+        return message
 
     updated_usages = list(current_usages | set(required_usages))
     payload = {"cert_usage": updated_usages}
@@ -221,12 +234,17 @@ def _ensure_usage_types(
                 f"Updated CA trust usage for {display_name}: "
                 f"{list(current_usages)} -> {updated_usages}"
             )
-        else:
-            log.error(
-                f"Failed to update CA trust usage for {display_name} [{r.status_code}]: {r.text}"
-            )
+            return None
+        message = (
+            f"Failed to update CA trust usage for {display_name} "
+            f"[{r.status_code}]: {_short_text(r.text)}"
+        )
+        log.error(message)
+        return message
     except Exception as e:
-        log.error(f"Exception updating CA trust usage for {display_name}: {e}")
+        message = f"Exception updating CA trust usage for {display_name}: {e}"
+        log.error(message)
+        return message
 
 
 def _upload_ca_cert(
@@ -236,8 +254,11 @@ def _upload_ca_cert(
     display_name: str,
     log: logging.Logger,
     ca_usages: list[str] | None = None,
-) -> None:
-    """Uploads a CA certificate to ClearPass trust list."""
+) -> str | None:
+    """Uploads a CA certificate to ClearPass trust list.
+
+    Returns an error string when the upload fails, otherwise None.
+    """
     cert_pem = ca_cert.public_bytes(Encoding.PEM).decode("utf-8")
     payload = {
         "cert_file": cert_pem,
@@ -254,9 +275,22 @@ def _upload_ca_cert(
         )
         if r.status_code in (200, 201):
             log.info(f"Added CA to trust list: {display_name}")
-        elif r.status_code == 422 and "already exists" in r.text.lower():
+            return None
+        if r.status_code == 422 and "already exists" in r.text.lower():
             log.info(f"CA already in trust list: {display_name}")
-        else:
-            log.error(f"Failed to add CA [{r.status_code}]: {r.text}")
+            return None
+        message = f"Failed to add CA {display_name} [{r.status_code}]: {_short_text(r.text)}"
+        log.error(message)
+        return message
     except Exception as e:
-        log.error(f"Exception adding CA to trust list: {e}")
+        message = f"Exception adding CA {display_name} to trust list: {e}"
+        log.error(message)
+        return message
+
+
+def _short_text(text: str, limit: int = 300) -> str:
+    """Collapses whitespace and caps length for an API error message."""
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:limit] + "..."

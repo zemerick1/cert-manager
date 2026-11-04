@@ -65,6 +65,7 @@ class HealthResponse(BaseModel):
     total_services: int
     certs_expiring_soon: int
     next_renewal_check: Optional[str] = None
+    callback_base: str = ""
 
 
 class CertPack(BaseModel):
@@ -183,3 +184,23 @@ class ClearPassCredentialInput(BaseModel):
 class AppSettingsInput(BaseModel):
     log_level: Optional[str] = None
     scheduler_time: Optional[str] = None
+
+
+class CertJob(BaseModel):
+    job_id: str
+    pack_name: str
+    kind: str
+    status: str
+    progress: list[str] = []
+    success: Optional[bool] = None
+    message: Optional[str] = None
+
+
+class CloudflareTokenTestInput(BaseModel):
+    api_token: str = Field(..., min_length=1, description="Cloudflare API token to test")
+
+
+class ClearPassConnectionTestInput(BaseModel):
+    host: str = Field(..., min_length=1, description="ClearPass publisher hostname")
+    client_id: str = Field(..., min_length=1, description="OAuth client ID")
+    client_secret: str = Field(..., min_length=1, description="OAuth client secret")

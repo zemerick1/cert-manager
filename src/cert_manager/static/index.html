@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Certificate Manager</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --ink: #1c2430;
+      --muted: #5c6b7a;
+      --line: #d5dde6;
+      --accent: #145c6e;
+      --accent-ink: #ffffff;
+      --ok: #0d6b4c;
+      --ok-bg: #e8f6ef;
+      --bad: #9d2c2c;
+      --bad-bg: #fdecec;
+      --warn: #8a5a00;
+      --warn-bg: #fff6e0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.5 "Segoe UI", system-ui, sans-serif;
+    }
+    a { color: var(--accent); }
+    header, main { width: min(42rem, calc(100% - 2rem)); margin: 0 auto; }
+    header { padding: 1.75rem 0 0.5rem; }
+    h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.15rem; margin: 0; }
+    p { margin: 0.4rem 0; }
+    .lede, .hint { color: var(--muted); }
+    .banner {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+      margin: 0.9rem 0;
+    }
+    details.card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin: 0.9rem 0;
+    }
+    details.card > summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.7rem;
+      align-items: center;
+      padding: 0.9rem 1.1rem;
+    }
+    details.card > summary::-webkit-details-marker { display: none; }
+    details.card > summary::marker { content: ""; }
+    details.card > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .panel { padding: 0 1.1rem 1rem; }
+    .num {
+      flex: 0 0 auto;
+      width: 1.6rem;
+      height: 1.6rem;
+      border-radius: 999px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-size: 0.85rem;
+      display: grid;
+      place-items: center;
+    }
+    .badge { margin-left: auto; font-size: 0.85rem; color: var(--muted); font-weight: 400; }
+    .badge.ok { color: var(--ok); }
+    .chevron {
+      width: 0.45rem;
+      height: 0.45rem;
+      border-right: 2px solid var(--muted);
+      border-bottom: 2px solid var(--muted);
+      transform: rotate(45deg) translateY(-2px);
+      flex: 0 0 auto;
+      margin-left: auto;
+    }
+    .badge + .chevron { margin-left: 0.15rem; }
+    details.card[open] > summary .chevron { transform: rotate(-135deg) translateY(-1px); }
+    .summary-note {
+      flex-basis: 100%;
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      font-weight: 400;
+    }
+    label { display: block; font-weight: 600; margin: 0.8rem 0 0.25rem; }
+    input, select, textarea {
+      width: 100%;
+      font: inherit;
+      color: inherit;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.55rem 0.7rem;
+    }
+    textarea { min-height: 5.5rem; resize: vertical; }
+    input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.9rem; }
+    button {
+      font: inherit;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      background: #fff;
+      color: var(--accent);
+      padding: 0.5rem 0.85rem;
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); color: var(--accent-ink); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .banner.warn { background: var(--warn-bg); border-color: #e6d3a1; }
+    .banner.bad { background: var(--bad-bg); border-color: #f0c2c2; }
+    .banner.ok { background: var(--ok-bg); border-color: #b7e0cc; }
+    .result { margin-top: 0.8rem; padding: 0.7rem 0.8rem; border-radius: 8px; white-space: pre-wrap; }
+    .result.ok { background: var(--ok-bg); color: var(--ok); }
+    .result.bad { background: var(--bad-bg); color: var(--bad); }
+    .result.warn { background: var(--warn-bg); color: var(--warn); }
+    ol.guide, ul.plain { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+    ul.plain { list-style: disc; }
+    pre.progress {
+      margin: 0.7rem 0 0;
+      max-height: 12rem;
+      overflow: auto;
+      background: #f7f9fb;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.6rem 0.7rem;
+      font: 0.85rem/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+      white-space: pre-wrap;
+    }
+    footer { width: min(42rem, calc(100% - 2rem)); margin: 0 auto 2rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Certificate Manager</h1>
+    <p class="lede">Save a Cloudflare token and a ClearPass login, then issue a certificate and install it on the cluster.</p>
+    <p><a href="/docs">API documentation</a></p>
+  </header>
+  <main>
+    <details class="card" id="card-status">
+      <summary>
+        <h2 id="status-title">Current state</h2>
+        <span class="chevron" aria-hidden="true"></span>
+        <span id="status-summary" class="summary-note">Loading…</span>
+      </summary>
+      <div class="panel">
+        <ul class="plain" id="status-certs"></ul>
+        <ul class="plain" id="status-services"></ul>
+        <div class="actions">
+          <button type="button" id="refresh">Refresh</button>
+        </div>
+      </div>
+    </details>
+
+    <div id="callback" class="banner" role="status">Checking the address ClearPass will use to download the certificate…</div>
+
+    <details class="card" id="card-cf">
+      <summary>
+        <span class="num">1</span>
+        <h2 id="cf-title">Cloudflare</h2>
+        <span class="badge" id="cf-badge">Not saved</span>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="panel">
+        <p class="hint">In Cloudflare, open My Profile, then API Tokens, then Create Token. Give the token Zone DNS Edit and Zone Zone Read, and include the zone that owns the certificate name. Do not use the Global API Key.</p>
+        <form id="cf-form">
+          <label for="cf-saved">Saved credential</label>
+          <select id="cf-saved"></select>
+          <label for="cf-token">API token</label>
+          <input id="cf-token" name="api_token" type="password" autocomplete="off" spellcheck="false">
+          <div class="actions">
+            <button type="submit">Test token</button>
+            <button type="button" id="cf-save">Save token</button>
+            <button type="button" id="cf-test-saved">Test saved token</button>
+          </div>
+        </form>
+        <div id="cf-result" class="result" hidden></div>
+      </div>
+    </details>
+
+    <details class="card" id="card-cp">
+      <summary>
+        <span class="num">2</span>
+        <h2 id="cp-title">ClearPass</h2>
+        <span class="badge" id="cp-badge">Not saved</span>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="panel">
+        <p>Create the API client on the publisher before saving it here. This page cannot create that client.</p>
+        <ol class="guide">
+          <li>Open Administration, then API Services, then API Clients, then Add.</li>
+          <li>Set Operating Mode to ClearPass REST API and Grant Type to Client Credentials.</li>
+          <li>Choose an operator profile that can manage server certificates and the trust list. Super Administrator is the profile that has those rights.</li>
+          <li>Save the client, then Generate New Secret. Copy the secret now. ClearPass shows it once.</li>
+        </ol>
+        <form id="cp-form">
+          <label for="cp-saved">Saved credential</label>
+          <select id="cp-saved"></select>
+          <label for="cp-name">Display name</label>
+          <input id="cp-name" autocomplete="organization">
+          <label for="cp-host">Publisher hostname</label>
+          <input id="cp-host" autocomplete="off" placeholder="clearpass.example.com" spellcheck="false">
+          <label for="cp-client">Client ID</label>
+          <input id="cp-client" autocomplete="off" spellcheck="false">
+          <label for="cp-secret">Client secret</label>
+          <input id="cp-secret" type="password" autocomplete="off">
+          <div class="actions">
+            <button type="submit">Test login</button>
+            <button type="button" id="cp-save">Save login</button>
+            <button type="button" id="cp-test-saved">Test saved login</button>
+          </div>
+        </form>
+        <div id="cp-result" class="result" hidden></div>
+        <p id="cp-certs-title" class="hint" hidden>Current certificates</p>
+        <ul class="plain" id="cp-certs" hidden></ul>
+      </div>
+    </details>
+
+    <details class="card" id="card-issue">
+      <summary>
+        <span class="num">3</span>
+        <h2 id="issue-title">Certificate</h2>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="panel">
+        <p class="hint">Names on the certificate, one per line. A name like <span lang="en">*.example.com</span> needs DNS Edit on the example.com zone. The certificate is requested from Let's Encrypt, then installed on the ClearPass usage you pick.</p>
+        <form id="issue-form">
+          <label for="domains">Certificate names</label>
+          <textarea id="domains" placeholder="clearpass.example.com" spellcheck="false"></textarea>
+          <label for="email">Let's Encrypt email</label>
+          <input id="email" type="email" autocomplete="email" placeholder="admin@example.com">
+          <label for="usage">Use on ClearPass</label>
+          <select id="usage">
+            <option value="HTTPS(RSA)">HTTPS (RSA) — web login and API</option>
+            <option value="HTTPS(ECC)">HTTPS (ECC) — web login and API</option>
+            <option value="RADIUS">RADIUS — 802.1X / EAP</option>
+            <option value="RadSec">RadSec — RADIUS over TLS</option>
+            <option value="Database">Database</option>
+          </select>
+          <p id="issue-block" class="hint"></p>
+          <div class="actions">
+            <button type="submit" class="primary" id="issue-button">Issue and install</button>
+          </div>
+        </form>
+        <pre id="progress" class="progress" hidden></pre>
+        <div id="issue-result" class="result" hidden></div>
+      </div>
+    </details>
+  </main>
+  <footer>
+    <p>Secrets stay in this service's config file. This page does not ask for a password.</p>
+  </footer>
+  <noscript><p>This page needs JavaScript to talk to the certificate service.</p></noscript>
+  <script>
+    const state = {
+      health: {},
+      acme: [],
+      clearpass: [],
+      certs: [],
+      services: [],
+      busy: false,
+      cardsReady: false,
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const cfSaved = $("cf-saved");
+    const cpSaved = $("cp-saved");
+
+    $("cf-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      testCloudflare(false);
+    });
+    $("cf-save").addEventListener("click", saveCloudflare);
+    $("cf-test-saved").addEventListener("click", () => testCloudflare(true));
+    $("cp-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      testClearpass(false);
+    });
+    $("cp-save").addEventListener("click", saveClearpass);
+    $("cp-test-saved").addEventListener("click", () => testClearpass(true));
+    $("issue-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      issueAndInstall();
+    });
+    $("refresh").addEventListener("click", () => refresh().catch(showLoadError));
+    $("email").addEventListener("change", () => localStorage.setItem("cm-email", $("email").value.trim()));
+    ["cp-name", "cp-host", "cp-client"].forEach((id) => {
+      $(id).addEventListener("change", () => localStorage.setItem("cm-" + id, $(id).value.trim()));
+    });
+    ["domains", "email", "usage", "cf-saved", "cp-saved"].forEach((id) => {
+      $(id).addEventListener("input", updateIssueButton);
+      $(id).addEventListener("change", updateIssueButton);
+    });
+
+    function selectedAcme() {
+      return state.acme.find((item) => item.id === cfSaved.value && item.provider === "cloudflare") || null;
+    }
+
+    function selectedClearpass() {
+      return state.clearpass.find((item) => item.id === cpSaved.value) || null;
+    }
+
+    function callbackHost() {
+      try {
+        return new URL(state.health.callback_base || "").hostname;
+      } catch {
+        return "";
+      }
+    }
+
+    function callbackBlocked() {
+      const host = callbackHost().toLowerCase();
+      return host === "" || host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0";
+    }
+
+    function setResult(el, kind, text) {
+      el.hidden = false;
+      el.className = "result " + kind;
+      el.textContent = text;
+    }
+
+    function fillSelect(select, items, label) {
+      const previous = select.value;
+      select.replaceChildren();
+      if (!items.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "None saved yet";
+        select.appendChild(option);
+        return;
+      }
+      for (const item of items) {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = label(item);
+        select.appendChild(option);
+      }
+      if (items.some((item) => item.id === previous)) select.value = previous;
+    }
+
+    function fillList(el, rows) {
+      el.replaceChildren();
+      for (const row of rows) {
+        const li = document.createElement("li");
+        li.textContent = row;
+        el.appendChild(li);
+      }
+    }
+
+    async function api(method, path, body) {
+      const options = { method, headers: {} };
+      if (body !== undefined) {
+        options.headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(body);
+      }
+      const response = await fetch(path, options);
+      const text = await response.text();
+      let data = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = { message: text };
+        }
+      }
+      if (!response.ok) {
+        const detail = data && data.detail;
+        let message = response.statusText;
+        if (typeof detail === "string") message = detail;
+        else if (Array.isArray(detail)) message = detail.map((item) => item.msg || JSON.stringify(item)).join("; ");
+        else if (data && data.message) message = data.message;
+        const error = new Error(message || "Request failed");
+        error.status = response.status;
+        throw error;
+      }
+      return data;
+    }
+
+    function rememberText(id) {
+      const saved = localStorage.getItem("cm-" + id);
+      if (saved && !$(id).value) $(id).value = saved;
+    }
+
+    async function refresh() {
+      const [health, acme, clearpass, certs, services] = await Promise.all([
+        api("GET", "/api/health"),
+        api("GET", "/api/credentials/acme"),
+        api("GET", "/api/credentials/clearpass"),
+        api("GET", "/api/certs"),
+        api("GET", "/api/services"),
+      ]);
+      state.health = health;
+      state.acme = acme.filter((item) => item.provider === "cloudflare");
+      state.clearpass = clearpass;
+      state.certs = certs;
+      state.services = services;
+      render();
+    }
+
+    function render() {
+      const health = state.health;
+      const summary = [
+        health.scheduler_running ? "Renewal scheduler is running." : "Renewal scheduler is off.",
+        (health.total_cert_packs || 0) + " certificate(s).",
+        (health.total_services || 0) + " ClearPass target(s).",
+        (health.certs_expiring_soon || 0) + " expiring within 30 days.",
+      ];
+      $("status-summary").textContent = summary.join(" ");
+      fillList($("status-certs"), state.certs.map((cert) => {
+        const days = cert.days_remaining == null ? "unknown expiry" : cert.days_remaining + " days left";
+        return cert.name + " — " + days + (cert.domains && cert.domains.length ? " — " + cert.domains.join(", ") : "");
+      }));
+      if (!state.certs.length) fillList($("status-certs"), ["No certificates yet."]);
+      fillList($("status-services"), state.services.map((service) => {
+        return service.name + " — " + service.cert_usage + " on " + service.host;
+      }));
+      if (!state.services.length) fillList($("status-services"), ["No ClearPass targets yet."]);
+
+      fillSelect(cfSaved, state.acme, (item) => item.name + " (" + item.id + ")");
+      fillSelect(cpSaved, state.clearpass, (item) => item.name + " — " + item.host);
+      $("cf-badge").textContent = state.acme.length ? "Saved" : "Not saved";
+      $("cf-badge").className = "badge" + (state.acme.length ? " ok" : "");
+      $("cp-badge").textContent = state.clearpass.length ? "Saved" : "Not saved";
+      $("cp-badge").className = "badge" + (state.clearpass.length ? " ok" : "");
+
+      const chosen = selectedClearpass();
+      if (chosen && !$("cp-host").value) $("cp-host").value = chosen.host || "";
+      if (chosen && !$("cp-name").value) $("cp-name").value = chosen.name || "";
+
+      const banner = $("callback");
+      const base = health.callback_base || "http://localhost";
+      if (callbackBlocked()) {
+        banner.className = "banner bad";
+        banner.textContent = "Install is turned off. ClearPass downloads the certificate from " + base + "/download/… on port 80, and that address is " + (callbackHost() || "empty") + ". Set EDGE_DOMAIN to a hostname every cluster node can open on port 80, then restart this service.";
+      } else {
+        banner.className = "banner ok";
+        banner.textContent = "ClearPass will download the certificate from " + base + "/download/… on port 80. Each cluster node must be able to open that address.";
+      }
+      updateIssueButton();
+      openNextCard();
+    }
+
+    function openNextCard() {
+      if (state.cardsReady) return;
+      state.cardsReady = true;
+      let id = "card-issue";
+      if (!state.acme.length) id = "card-cf";
+      else if (!state.clearpass.length) id = "card-cp";
+      $(id).open = true;
+    }
+
+    function updateIssueButton() {
+      const reasons = [];
+      if (!selectedAcme()) reasons.push("Save a Cloudflare token.");
+      if (!selectedClearpass()) reasons.push("Save a ClearPass login.");
+      if (!parseDomains($("domains").value).length) reasons.push("Enter a certificate name.");
+      if (!$("email").value.includes("@")) reasons.push("Enter the Let's Encrypt email.");
+      if (callbackBlocked()) reasons.push("EDGE_DOMAIN is still a local address, so install stays off.");
+      $("cf-test-saved").disabled = state.busy || !selectedAcme();
+      $("cp-test-saved").disabled = state.busy || !selectedClearpass();
+      $("issue-button").disabled = state.busy || reasons.length > 0;
+      $("issue-block").textContent = reasons.join(" ");
+    }
+
+    function showLoadError(error) {
+      $("status-summary").textContent = "Could not load the service: " + error.message;
+    }
+
+    async function testCloudflare(saved) {
+      try {
+        if (saved && !selectedAcme()) {
+          setResult($("cf-result"), "bad", "Save a Cloudflare token first.");
+          return;
+        }
+        const token = $("cf-token").value.trim();
+        if (!saved && !token) {
+          setResult($("cf-result"), "bad", "Paste the API token first.");
+          return;
+        }
+        const result = saved
+          ? await api("POST", "/api/credentials/acme/" + encodeURIComponent(selectedAcme().id) + "/test")
+          : await api("POST", "/api/credentials/acme/test", { api_token: token });
+        setResult($("cf-result"), result.success ? "ok" : "bad", result.message || "Test finished.");
+      } catch (error) {
+        setResult($("cf-result"), "bad", error.message);
+      }
+    }
+
+    async function saveCloudflare() {
+      const token = $("cf-token").value.trim();
+      if (!token) {
+        setResult($("cf-result"), "bad", "Paste the API token first.");
+        return;
+      }
+      const existing = selectedAcme();
+      const id = existing ? existing.id : "cloudflare";
+      const name = existing ? existing.name : "Cloudflare";
+      try {
+        const result = await api("POST", "/api/credentials/acme", {
+          id: id,
+          name: name,
+          provider: "cloudflare",
+          api_token: token,
+        });
+        $("cf-token").value = "";
+        await refresh();
+        cfSaved.value = id;
+        updateIssueButton();
+        setResult($("cf-result"), "ok", result.message || "Token saved.");
+      } catch (error) {
+        setResult($("cf-result"), "bad", error.message);
+      }
+    }
+
+    function clearpassBody() {
+      return {
+        host: $("cp-host").value.trim(),
+        client_id: $("cp-client").value.trim(),
+        client_secret: $("cp-secret").value,
+      };
+    }
+
+    function hideInstalled() {
+      $("cp-certs").replaceChildren();
+      $("cp-certs").hidden = true;
+      $("cp-certs-title").hidden = true;
+    }
+
+    function formatCertNames(row) {
+      const servers = row.servers || [];
+      const rendered = servers.map((item) => (item.names || []).join(", "));
+      const distinct = new Set(rendered);
+      if (servers.length > 1 && distinct.size > 1) {
+        return servers.map((item) => {
+          const names = (item.names || []).join(", ") || "No certificate";
+          return item.server + " " + names;
+        }).join("; ");
+      }
+      if (row.names && row.names.length) return row.names.join(", ");
+      return "No certificate";
+    }
+
+    function renderInstalled(certificates) {
+      const list = $("cp-certs");
+      list.replaceChildren();
+      if (!certificates || !certificates.length) {
+        hideInstalled();
+        return;
+      }
+      for (const row of certificates) {
+        const li = document.createElement("li");
+        li.textContent = (row.label || row.usage || "Certificate") + ": " + formatCertNames(row);
+        list.appendChild(li);
+      }
+      list.hidden = false;
+      $("cp-certs-title").hidden = false;
+    }
+
+    async function testClearpass(saved) {
+      try {
+        if (saved && !selectedClearpass()) {
+          hideInstalled();
+          setResult($("cp-result"), "bad", "Save a ClearPass login first.");
+          return;
+        }
+        const body = clearpassBody();
+        if (!saved && (!body.host || !body.client_id || !body.client_secret)) {
+          hideInstalled();
+          setResult($("cp-result"), "bad", "Enter the publisher hostname, client ID, and client secret.");
+          return;
+        }
+        const result = saved
+          ? await api("POST", "/api/credentials/clearpass/" + encodeURIComponent(selectedClearpass().id) + "/test")
+          : await api("POST", "/api/credentials/clearpass/test", body);
+        const servers = result.data && result.data.servers ? " Nodes: " + result.data.servers.join(", ") + "." : "";
+        setResult($("cp-result"), result.success ? "ok" : "bad", (result.message || "Test finished.") + servers);
+        if (result.success) renderInstalled(result.data && result.data.certificates);
+        else hideInstalled();
+      } catch (error) {
+        hideInstalled();
+        setResult($("cp-result"), "bad", error.message);
+      }
+    }
+
+    async function saveClearpass() {
+      const body = clearpassBody();
+      if (!body.host || !body.client_id || !body.client_secret) {
+        hideInstalled();
+        setResult($("cp-result"), "bad", "Enter the publisher hostname, client ID, and client secret.");
+        return;
+      }
+      const existing = selectedClearpass();
+      const id = existing ? existing.id : "clearpass";
+      try {
+        const result = await api("POST", "/api/credentials/clearpass", {
+          id: id,
+          name: $("cp-name").value.trim() || "ClearPass",
+          host: body.host,
+          client_id: body.client_id,
+          client_secret: body.client_secret,
+          verify_ssl: false,
+        });
+        $("cp-secret").value = "";
+        await refresh();
+        cpSaved.value = id;
+        updateIssueButton();
+        hideInstalled();
+        setResult($("cp-result"), "ok", result.message || "Login saved.");
+      } catch (error) {
+        hideInstalled();
+        setResult($("cp-result"), "bad", error.message);
+      }
+    }
+
+    function parseDomains(value) {
+      const seen = new Set();
+      const names = [];
+      for (const part of value.split(/[\s,]+/)) {
+        const name = part.trim();
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        names.push(name);
+      }
+      return names;
+    }
+
+    function packName(domains) {
+      const raw = domains[0].replace(/^\*\./, "").trim().toLowerCase();
+      return raw.replace(/[^\w.-]/g, "_") || "clearpass-cert";
+    }
+
+    function serviceName(usage) {
+      return "clearpass-" + usage.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    }
+
+    function showProgress(lines) {
+      const box = $("progress");
+      box.hidden = false;
+      box.textContent = lines.join("\n");
+    }
+
+    async function startJob(body) {
+      try {
+        return await api("POST", "/api/certs/jobs", body);
+      } catch (error) {
+        if (error.status !== 409) throw error;
+        const jobs = await api("GET", "/api/certs/jobs");
+        const active = jobs.find((job) => {
+          return job.pack_name === body.pack_name && (job.status === "PENDING" || job.status === "RUNNING");
+        });
+        if (!active) throw error;
+        return active;
+      }
+    }
+
+    async function pollJob(jobId) {
+      const started = Date.now();
+      while (Date.now() - started < 20 * 60 * 1000) {
+        const job = await api("GET", "/api/certs/jobs/" + jobId);
+        showProgress(job.progress.length ? job.progress : ["Waiting for Certbot…"]);
+        if (job.status === "SUCCESS" || job.status === "FAILED") return job;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      throw new Error("The certificate request is still running. Refresh this page in a minute and look under Current state.");
+    }
+
+    async function deployPack(pack, usage, credential) {
+      const name = serviceName(usage);
+      const fields = {
+        host: credential.host,
+        type: "clearpass",
+        cert_pack_id: pack,
+        cert_usage: usage,
+        credential_id: credential.id,
+        enabled: true,
+        additional_nodes: [],
+      };
+      const exists = state.services.some((service) => service.name === name);
+      if (exists) {
+        const update = Object.assign({}, fields);
+        delete update.type;
+        await api("PATCH", "/api/services/" + encodeURIComponent(name), update);
+      } else {
+        await api("POST", "/api/services", Object.assign({ name: name }, fields));
+      }
+      return api("POST", "/api/services/" + encodeURIComponent(name) + "/deploy");
+    }
+
+    async function issueAndInstall() {
+      const domains = parseDomains($("domains").value);
+      const email = $("email").value.trim();
+      const usage = $("usage").value;
+      const cloudflare = selectedAcme();
+      const clearpass = selectedClearpass();
+      if (!cloudflare || !clearpass || !domains.length || !email.includes("@") || callbackBlocked()) {
+        updateIssueButton();
+        return;
+      }
+      state.busy = true;
+      updateIssueButton();
+      $("progress").hidden = false;
+      $("progress").textContent = "";
+      try {
+        localStorage.setItem("cm-email", email);
+        const pack = packName(domains);
+        setResult($("issue-result"), "ok", "Requesting the certificate. Leave this page open.");
+        const job = await startJob({
+          pack_name: pack,
+          domains: domains,
+          provider: "cloudflare",
+          credential_id: cloudflare.id,
+          email: email,
+          challenge_type: "dns-01",
+          key_type: usage === "HTTPS(ECC)" ? "ecdsa" : "rsa",
+          is_edge: false,
+        });
+        const finished = await pollJob(job.job_id);
+        if (finished.status !== "SUCCESS") {
+          setResult($("issue-result"), "bad", finished.message || "Certificate request failed.");
+          return;
+        }
+        showProgress(finished.progress.concat(["Certificate saved. Installing it on ClearPass."]));
+        const deployed = await deployPack(pack, usage, clearpass);
+        const kind = deployed.success ? (deployed.message && deployed.message.includes("CA trust") ? "warn" : "ok") : "bad";
+        const stage = deployed.data && deployed.data.stage ? " (" + deployed.data.stage + ")" : "";
+        setResult($("issue-result"), kind, (deployed.message || "Install finished.") + stage);
+      } catch (error) {
+        setResult($("issue-result"), "bad", error.message);
+      } finally {
+        state.busy = false;
+        updateIssueButton();
+        await refresh().catch(showLoadError);
+      }
+    }
+
+    rememberText("email");
+    rememberText("cp-name");
+    rememberText("cp-host");
+    rememberText("cp-client");
+    refresh().catch(showLoadError);
+  </script>
+</body>
+</html>

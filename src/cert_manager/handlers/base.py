@@ -18,7 +18,7 @@ class CertificateHandler(ABC):
         self.logger = logging.getLogger(f"cert_manager.handler.{name}")
 
     @abstractmethod
-    def deploy(self, cert_path: str, key_path: str) -> bool:
+    def deploy(self, cert_path: str, key_path: str) -> dict:
         """Deploys a certificate to the service.
 
         Args:
@@ -26,7 +26,9 @@ class CertificateHandler(ABC):
             key_path: Path to the privkey.pem file.
 
         Returns:
-            True if deployment was successful, False otherwise.
+            Dict with success, message, and stage. stage names the step
+            that produced the result: config, pfx, oauth, cluster, or install.
+            Per-node detail is under nodes.
         """
 
     def check_remote_expiry(self) -> dict:

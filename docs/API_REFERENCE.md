@@ -51,7 +51,8 @@ Returns the health status of the application.
   "total_cert_packs": 3,
   "total_services": 2,
   "certs_expiring_soon": 0,
-  "next_renewal_check": "2024-01-16T00:30:00+00:00"
+  "next_renewal_check": "2024-01-16T00:30:00+00:00",
+  "callback_base": "http://certs.example.com"
 }
 ```
 
@@ -65,6 +66,7 @@ Returns the health status of the application.
 | `total_services` | integer | Number of managed services |
 | `certs_expiring_soon` | integer | Certs expiring within 30 days |
 | `next_renewal_check` | string | ISO timestamp of next scheduled check |
+| `callback_base` | string | URL prefix ClearPass uses to download a certificate (`http://{EDGE_DOMAIN}`, port 80) |
 
 ---
 
@@ -165,6 +167,72 @@ Requests a new ACME certificate from Let's Encrypt.
   "data": null
 }
 ```
+
+This call blocks until Certbot finishes. Use the job endpoints below to return immediately and poll for progress.
+
+---
+
+### POST /api/certs/jobs
+
+Starts the same certificate request as `POST /api/certs/request` and returns a job. The job record lives in the API process. A restart drops it. The certificate files and `config.yaml` are still written by the request itself.
+
+**Request Body**
+
+Same fields as `POST /api/certs/request`.
+
+**Response**
+
+```json
+{
+  "job_id": "b7e1c0a2f4d64e0a9c1b2d3e4f506172",
+  "pack_name": "my-domain",
+  "kind": "request",
+  "status": "PENDING",
+  "progress": [],
+  "success": null,
+  "message": null
+}
+```
+
+`status` moves from `PENDING` to `RUNNING`, then `SUCCESS` or `FAILED`. `progress` collects the lines Certbot emits while it waits on DNS.
+
+**Errors**
+
+| Code | Description |
+|------|-------------|
+| 409 | A job for this pack is already pending or running |
+
+---
+
+### GET /api/certs/jobs
+
+Lists jobs started in this process, newest first.
+
+---
+
+### GET /api/certs/jobs/{job_id}
+
+Returns one job, including progress lines and the final message.
+
+**Errors**
+
+| Code | Description |
+|------|-------------|
+| 404 | Job not found |
+
+---
+
+### POST /api/certs/{pack_name}/jobs
+
+Starts a renewal for an existing ACME pack and returns a job. Poll `GET /api/certs/jobs/{job_id}`. `POST /api/certs/{pack_name}/renew` still blocks until Certbot finishes.
+
+**Errors**
+
+| Code | Description |
+|------|-------------|
+| 404 | Certificate pack not found |
+| 400 | Pack is not an ACME certificate |
+| 409 | A job for this pack is already pending or running |
 
 ---
 
@@ -438,20 +506,34 @@ Deploys certificate to a managed service.
 
 **Response**
 
+`data.stage` names the step that produced the result: `config`, `pfx`, `oauth`, `cluster`, or `install`. `data.nodes` is one entry per ClearPass host. A CA trust failure is listed on the node and in the message, including when the certificate install itself succeeded.
+
 ```json
 {
-  "success": true,
-  "message": "Deployment successful",
-  "data": null
+  "success": false,
+  "message": "ClearPass authentication failed (401): invalid_client",
+  "data": {
+    "stage": "oauth",
+    "nodes": [
+      {
+        "host": "https://clearpass.example.com",
+        "success": false,
+        "stage": "oauth",
+        "message": "ClearPass authentication failed (401): invalid_client",
+        "ca_trust_errors": []
+      }
+    ]
+  }
 }
 ```
+
+An install rejection includes the HTTP status and the URL ClearPass was told to download. The same text is on the matching node. A missing certificate pack stays HTTP 200 with `success: false`.
 
 **Errors**
 
 | Code | Description |
 |------|-------------|
 | 404 | Service not found |
-| 400 | No certificate pack assigned |
 
 ---
 
@@ -563,6 +645,48 @@ Adds a new ACME credential.
 
 ---
 
+### POST /api/credentials/acme/test
+
+Tests a Cloudflare API token without saving it. The check calls Cloudflare's token verify endpoint, lists visible zones, and reads one DNS record. It does not create a DNS record. Zone DNS Edit is still required for issuance and is not proven by this call.
+
+**Request Body**
+
+```json
+{
+  "api_token": "your-api-token"
+}
+```
+
+**Response**
+
+```json
+{
+  "success": true,
+  "message": "Cloudflare token is active. It can see 1 zone(s): example.com. DNS read succeeded on example.com. Certificate issuance also needs Zone:DNS:Edit on that zone.",
+  "data": {
+    "token_status": "active",
+    "zones": ["example.com"],
+    "dns_read": true
+  }
+}
+```
+
+The token is not echoed in the response.
+
+---
+
+### POST /api/credentials/acme/{credential_id}/test
+
+Tests a saved ACME credential. Live checks run for Cloudflare tokens. Other providers return `success: false` with the provider name. Saved secrets are not included in the response.
+
+**Errors**
+
+| Code | Description |
+|------|-------------|
+| 404 | Credential not found |
+
+---
+
 ### DELETE /api/credentials/acme/{credential_id}
 
 Deletes an ACME credential.
@@ -646,6 +770,84 @@ Adds a new ClearPass credential.
   "data": null
 }
 ```
+
+---
+
+### POST /api/credentials/clearpass/test
+
+Signs in to ClearPass with an OAuth client, lists cluster nodes, and reads the DNS name on each installed server certificate. Nothing is saved. The access token and client secret are not returned.
+
+A missing certificate has an empty `names` list and does not fail the login. The usages are `HTTPS(RSA)`, `HTTPS(ECC)`, `RADIUS` (802.1X / EAP), `RadSec`, and `Database`. `names` is the DNS subject alternative names, or the common name when the certificate has no DNS name. When nodes disagree, `servers` lists each node's names.
+
+**Request Body**
+
+```json
+{
+  "host": "clearpass.example.com",
+  "client_id": "cert-manager",
+  "client_secret": "your-oauth-client-secret"
+}
+```
+
+**Response**
+
+```json
+{
+  "success": true,
+  "message": "Authenticated to https://clearpass.example.com. Found 1 cluster node(s): cppm1.",
+  "data": {
+    "stage": "ok",
+    "host": "https://clearpass.example.com",
+    "servers": ["cppm1"],
+    "certificates": [
+      {
+        "usage": "HTTPS(RSA)",
+        "label": "HTTPS (RSA)",
+        "names": ["clearpass.example.com"],
+        "servers": [{"server": "cppm1", "names": ["clearpass.example.com"]}]
+      },
+      {
+        "usage": "HTTPS(ECC)",
+        "label": "HTTPS (ECC)",
+        "names": [],
+        "servers": [{"server": "cppm1", "names": []}]
+      },
+      {
+        "usage": "RADIUS",
+        "label": "RADIUS / EAP",
+        "names": ["radius.example.com"],
+        "servers": [{"server": "cppm1", "names": ["radius.example.com"]}]
+      },
+      {
+        "usage": "RadSec",
+        "label": "RadSec",
+        "names": [],
+        "servers": [{"server": "cppm1", "names": []}]
+      },
+      {
+        "usage": "Database",
+        "label": "Database",
+        "names": ["db.example.com"],
+        "servers": [{"server": "cppm1", "names": ["db.example.com"]}]
+      }
+    ]
+  }
+}
+```
+
+`data.stage` is `config`, `oauth`, or `cluster` when the test fails. An OAuth failure includes the ClearPass status code and response body. Certificate names are only present after a successful login and cluster lookup.
+
+---
+
+### POST /api/credentials/clearpass/{credential_id}/test
+
+Runs the same check with a saved ClearPass credential.
+
+**Errors**
+
+| Code | Description |
+|------|-------------|
+| 404 | Credential not found |
 
 ---
 

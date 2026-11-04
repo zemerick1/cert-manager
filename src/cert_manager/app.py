@@ -17,6 +17,7 @@ from cert_manager.config import get_settings
 from cert_manager.core.cert_store import CertStore
 from cert_manager.core.config_manager import ConfigManager
 from cert_manager.handlers.clearpass import get_download_path
+from cert_manager.services.cert_jobs import CertJobStore
 from cert_manager.services.scheduler import RenewalScheduler
 
 logger = logging.getLogger("cert_manager")
@@ -145,8 +146,16 @@ async def _deploy_to_services_for_pack(pack_name: str) -> None:
                             service["client_secret"] = cred.get("client_secret")
 
                     handler = ArubaClearPassHandler(service)
-                    await asyncio.to_thread(handler.deploy, paths[0], paths[1])
-                    logger.info(f"Auto-deployed '{pack_name}' to '{service['name']}'.")
+                    result = await asyncio.to_thread(handler.deploy, paths[0], paths[1])
+                    if result.get("success"):
+                        logger.info(
+                            f"Auto-deployed '{pack_name}' to '{service['name']}': "
+                            f"{result.get('message')}"
+                        )
+                    else:
+                        logger.error(
+                            f"Auto-deploy to '{service['name']}' failed: {result.get('message')}"
+                        )
             except Exception as e:
                 logger.error(f"Auto-deploy to '{service['name']}' failed: {e}")
 
@@ -217,6 +226,7 @@ def _initialize_context() -> None:
         "cert_store": cert_store,
         "acme": acme,
         "scheduler": scheduler,
+        "jobs": CertJobStore(),
         "edge_domain": settings.edge_domain,
         "log_path": log_path,
     }
@@ -283,10 +293,13 @@ async def download_pfx(token: str, filename: str):
     )
 
 
-# Redirect root to docs
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+
 @app.get("/")
 async def root():
-    """Redirects to API documentation."""
-    from fastapi.responses import RedirectResponse
-
-    return RedirectResponse(url="/docs")
+    """Serves the setup page. Interactive API documentation stays at /docs."""
+    page = os.path.join(_STATIC_DIR, "index.html")
+    if not os.path.isfile(page):
+        return JSONResponse({"error": "Setup page is not installed"}, status_code=404)
+    return FileResponse(page)

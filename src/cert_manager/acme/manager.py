@@ -321,7 +321,11 @@ class AcmeManager:
 
         return lines
 
-    def renew_certificate(self, pack_name: str) -> dict:
+    def renew_certificate(
+        self,
+        pack_name: str,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> dict:
         """Renews an existing ACME certificate by re-requesting it."""
         meta = self.config_mgr.get_cert_pack_meta(pack_name)
         if not meta or meta.get("source") != "acme":
@@ -336,6 +340,7 @@ class AcmeManager:
             challenge_type=meta.get("challenge_type", "dns-01"),
             key_type=meta.get("key_type", "ecdsa"),
             is_edge=meta.get("is_edge", False),
+            progress_callback=progress_callback,
         )
 
     def check_renewal_needed(self, pack_name: str) -> bool:
