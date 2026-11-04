@@ -1,0 +1,59 @@
+# AI review on pull requests via the Grok CLI.
+#
+# You must add a repository secret:
+#   XAI_API_KEY  — API key from https://console.x.ai
+#
+# Default GITHUB_TOKEN can post the review if this workflow has
+# pull-requests: write (set below). Fork PRs from outside the repo
+# will not receive XAI_API_KEY (GitHub hides secrets on fork
+# pull_request events).
+
+name: grok-review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: grok-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install Grok CLI
+        run: |
+          curl -fsSL https://x.ai/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.grok/bin" >> "$GITHUB_PATH"
+
+      - name: Review PR
+        env:
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GROK_REVIEW_PROMPT: |
+            You are in GitHub Actions reviewing PR #${{ github.event.pull_request.number }} on ${{ github.repository }}.
+            Use gh to read the PR diff and files. Review for bugs, regressions, and missing tests.
+            Post findings as a GitHub pull request review (gh pr review or the reviews API).
+            Do not modify source files.
+        run: |
+          if [ -z "$XAI_API_KEY" ]; then
+            echo "::error::Repo secret XAI_API_KEY is empty. Add an API key from https://console.x.ai"
+            exit 1
+          fi
+          grok --version
+          grok -p "$GROK_REVIEW_PROMPT" --always-approve
