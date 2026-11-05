@@ -96,7 +96,15 @@ This listens on port 8000 only. ClearPass still needs port 80 of `EDGE_DOMAIN` t
 
 Open http://localhost:8000/. The page is one file served by this service. It is a client of the API below. Skip it and call the API when you want to.
 
-The page has four cards:
+The cards start collapsed. Current state is the renewal line: whether the scheduler is running, how many certificates are saved, and how many expire within 30 days. It does not name the next check or say which certificates Let's Encrypt will replace.
+
+![Setup page. Current state, Cloudflare, ClearPass, Certificate, and Your certificate.](docs/images/setup-page.png)
+
+The Certificate card is a Let's Encrypt request. The usage list is where that certificate is installed on ClearPass.
+
+![Certificate card with the ClearPass usage list open.](docs/images/certificate-usage.png)
+
+The page has these cards:
 
 1. **Current state.** Saved certificates, the ClearPass target each one is assigned to, and a Deploy button that installs that saved certificate again. The card also shows the download address from `EDGE_DOMAIN`.
 2. **Cloudflare.** Create an API token in Cloudflare with Zone DNS Edit and Zone Zone Read on the zone that owns the name. Paste the token here. This is not the Global API Key.
@@ -271,9 +279,11 @@ ClearPass certificates do not use this path.
 
 ## Background scheduler
 
-**Renewal, daily.** Runs at `SCHEDULER_TIME` (default 00:30 UTC). Reissues ACME packs with `auto_renew: true` that expire within 30 days, reloads nginx for edge packs, and deploys to services that reference the pack.
+The setup page reports that the scheduler is running. It does not show a per-certificate renewal time. Two loops run after a certificate is installed.
 
-**Monitor, every 5 minutes.** Health-checks enabled services, deploys when the remote serial does not match the stored certificate, and retries pending or failed ACME requests up to five times.
+**Renewal, daily.** Runs at `SCHEDULER_TIME` (default 00:30 UTC). Reissues Let's Encrypt packs with `auto_renew: true` that expire within 30 days, then deploys the new certificate to services that use it. Reloads nginx for edge packs. A certificate uploaded on Your certificate is `manual` and `auto_renew: false`, so this loop leaves it alone.
+
+**Monitor, every 5 minutes.** Reads the certificate on each enabled ClearPass target, including subscriber hostnames. When the serial on the appliance does not match the copy stored here, it installs that stored copy again. This is the same file, not a new certificate from a certificate authority. It also retries a Let's Encrypt request that is still pending or failed, up to five times.
 
 ## Security
 
