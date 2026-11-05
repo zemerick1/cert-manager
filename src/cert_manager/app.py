@@ -7,12 +7,24 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from cert_manager.acme.manager import AcmeManager
 from cert_manager.api.routes import router, set_context
+from cert_manager.auth import (
+    AdminAuthMiddleware,
+    attach_session,
+    auth_enabled,
+    clear_session,
+    expected_username,
+    log_auth_mode,
+    login_ok,
+    login_page,
+    request_authenticated,
+    safe_next,
+)
 from cert_manager.config import get_settings
 from cert_manager.core.cert_store import CertStore
 from cert_manager.core.config_manager import ConfigManager
@@ -248,6 +260,7 @@ async def lifespan(app: FastAPI):
 
     if settings.scheduler_enabled:
         _app_context["scheduler"].start()
+    log_auth_mode(settings)
 
     yield
 
@@ -264,6 +277,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(AdminAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -303,3 +317,46 @@ async def root():
     if not os.path.isfile(page):
         return JSONResponse({"error": "Setup page is not installed"}, status_code=404)
     return FileResponse(page)
+
+
+@app.get("/login")
+async def login_form(request: Request, next_path: str = Query("/", alias="next")):
+    """Shows the sign-in page. A valid session continues to the requested path."""
+    settings = get_settings()
+    destination = safe_next(next_path)
+    if not auth_enabled(settings) or request_authenticated(request, settings):
+        return RedirectResponse(destination if auth_enabled(settings) else "/", status_code=303)
+    return login_page(expected_username(settings), destination)
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    """Checks the sign-in form and sets the session cookie."""
+    settings = get_settings()
+    form = await request.form()
+    destination = safe_next(str(form.get("next") or "/"))
+    if not auth_enabled(settings):
+        return RedirectResponse("/", status_code=303)
+    username = str(form.get("username") or "")
+    password = str(form.get("password") or "")
+    if not login_ok(username, password, settings):
+        shown = username or expected_username(settings)
+        return login_page(
+            shown,
+            destination,
+            "That username or password is wrong.",
+            status_code=401,
+        )
+    response = RedirectResponse(destination, status_code=303)
+    attach_session(response, settings)
+    logger.info("Sign-in succeeded for user %s.", expected_username(settings))
+    return response
+
+
+@app.post("/logout")
+async def logout():
+    """Clears the session cookie."""
+    target = "/login" if auth_enabled() else "/"
+    response = RedirectResponse(target, status_code=303)
+    clear_session(response)
+    return response

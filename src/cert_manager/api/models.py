@@ -66,6 +66,7 @@ class HealthResponse(BaseModel):
     certs_expiring_soon: int
     next_renewal_check: Optional[str] = None
     callback_base: str = ""
+    auth_required: bool = False
 
 
 class CertPack(BaseModel):

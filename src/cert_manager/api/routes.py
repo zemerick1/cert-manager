@@ -25,6 +25,7 @@ from cert_manager.api.models import (
     ServiceInput,
     ServiceUpdateInput,
 )
+from cert_manager.auth import auth_enabled
 from cert_manager.core import cert_validator
 from cert_manager.handlers.clearpass import ArubaClearPassHandler, get_callback_base
 from cert_manager.services.cert_jobs import JobInProgress, run_renew_job, run_request_job
@@ -72,6 +73,7 @@ def health_check(ctx: Context):
             scheduler.next_check.isoformat() if scheduler and scheduler.next_check else None
         ),
         callback_base=get_callback_base(),
+        auth_required=auth_enabled(),
     )
 
 

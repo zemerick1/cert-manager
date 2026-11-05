@@ -34,6 +34,8 @@ def app_client(tmp_data_dir, monkeypatch):
     monkeypatch.setenv("EDGE_DOMAIN", "localhost")
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "")
 
     # Clear the cached settings so the monkeypatched env vars take effect.
     from cert_manager.config import get_settings

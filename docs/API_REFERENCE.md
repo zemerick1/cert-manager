@@ -22,7 +22,13 @@
 
 ### Authentication
 
-Currently, the API does not require authentication. For production deployments, consider placing the service behind a reverse proxy with authentication.
+When `ADMIN_PASSWORD` is set, the setup page shows a sign-in form. The username defaults to `admin` (`ADMIN_USERNAME`). A successful sign-in sets an HttpOnly cookie for 12 hours. `/api` (except `GET /api/health`) and the docs require that cookie. `GET /download/{token}/{filename}` stays open so ClearPass can fetch a one-time certificate. An empty `ADMIN_PASSWORD` leaves the service open.
+
+```bash
+curl -c /tmp/cm-cookie -X POST http://localhost:8000/login \
+  -d 'username=admin&password=your-password'
+curl -b /tmp/cm-cookie http://localhost:8000/api/certs
+```
 
 ### Content Type
 
