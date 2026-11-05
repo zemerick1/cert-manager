@@ -14,7 +14,7 @@ docker compose up --build
 
 Open http://localhost:8000/ in a browser. From another machine, open http://<this-host>:8000/.
 
-That command keeps the log in the terminal. The same process is also published on port 80, which is where ClearPass downloads a certificate. Before that install, copy `.env.example` to `.env` and set `EDGE_DOMAIN` to this host's name or IP. Quick start below has the background command and the rest of the setup.
+That command keeps the log in the terminal. The same process is also published on port 80, which is where ClearPass downloads a certificate. Before that install, copy `.env.example` to `.env` and set `EDGE_DOMAIN` to this host's name or IP. Set `ADMIN_PASSWORD` in that file too. The browser then shows a sign-in page. The username is `admin` unless you change it. Quick start below has the background command and the rest of the setup.
 
 ## Architecture
 
@@ -56,7 +56,7 @@ The publisher's cluster API supplies the node list, and the certificate is insta
 
 Credential tests, certificate jobs, and deploy results are all API operations. Jobs are kept in memory and are dropped when the process restarts. Saved certificates and `data/config.yaml` remain.
 
-There is no API password. Do not publish port 80 or port 8000 on an untrusted network.
+**Login.** `ADMIN_USERNAME` defaults to `admin`. `ADMIN_PASSWORD` is the password on the sign-in page for the setup page, `/docs`, and `/api`. The browser keeps that sign-in for 12 hours. Leave the password empty and those routes stay open. `/download/...` does not use this password. ClearPass fetches the one-time certificate link with no login. `GET /api/health` stays open so the container health check can run. Do not publish port 80 or port 8000 on an untrusted network.
 
 ## Quick start
 
@@ -67,7 +67,7 @@ cd cert-manager
 cp .env.example .env
 ```
 
-Set `EDGE_DOMAIN` in `.env` to the hostname or IP of this Docker host. Every ClearPass node must be able to open port 80 on that address.
+Set `EDGE_DOMAIN` in `.env` to the hostname or IP of this Docker host. Every ClearPass node must be able to open port 80 on that address. Set `ADMIN_PASSWORD` in the same file. The username is `admin` unless you set `ADMIN_USERNAME`.
 
 ```bash
 docker compose up -d
@@ -141,6 +141,8 @@ The ClearPass API client cannot be created from this page. The client secret is 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EDGE_DOMAIN` | `localhost` | Hostname or IP ClearPass uses to download a certificate on port 80. It must reach this host. Also the directory name for edge certificates under `ssl/live/` |
+| `ADMIN_USERNAME` | `admin` | Name on the sign-in page for the setup page, `/docs`, and `/api` |
+| `ADMIN_PASSWORD` | empty | Password on that sign-in page. Empty leaves those routes open. `/download` does not use it |
 | `DATA_DIR` | `/app/data` | Config, certificate packs, and logs |
 | `SSL_DIR` | `/etc/letsencrypt` | Certbot directory |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
@@ -203,7 +205,13 @@ Longer notes are in [docs/API_REFERENCE.md](docs/API_REFERENCE.md).
 | GET | `/api/settings` | Scheduler settings stored in the config file |
 | PATCH | `/api/settings` | Update those settings |
 
-The setup page uses the job and credential-test routes. The blocking request and renew routes are still there for scripts.
+The setup page uses the job and credential-test routes. The blocking request and renew routes are still there for scripts. When `ADMIN_PASSWORD` is set, sign in first and reuse the cookie:
+
+```bash
+curl -c /tmp/cm-cookie -X POST http://localhost:8000/login \
+  -d 'username=admin&password=your-password'
+curl -b /tmp/cm-cookie http://localhost:8000/api/certs
+```
 
 ### Examples
 
@@ -323,7 +331,9 @@ The setup page reports that the scheduler is running. It does not show a per-cer
 
 ## Security
 
-Credentials are plaintext in `data/config.yaml`. The API does not ask for a password. Port 80 and port 8000 serve that API, including the certificate download.
+Set `ADMIN_PASSWORD` before publishing port 80 or port 8000. The username defaults to `admin`. The sign-in page covers the setup page, `/docs`, and `/api`. `/download/<token>/clearpass.pfx` stays open so ClearPass can fetch the certificate. The token is single use. `GET /api/health` stays open and does not return secrets.
+
+Credentials are plaintext in `data/config.yaml`. Port 80 and port 8000 serve that API, including the certificate download.
 
 Keep `config.yaml` out of git, restrict its permissions, and publish the service only on a network that should be able to manage certificates. ClearPass API calls use `verify_ssl: false` unless you set it true on the credential.
 

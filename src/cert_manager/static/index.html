@@ -29,6 +29,8 @@
       font: 16px/1.5 "Segoe UI", system-ui, sans-serif;
     }
     a { color: var(--accent); }
+    .header-row { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; }
+    .header-row form { margin: 0; }
     header, main { width: min(42rem, calc(100% - 2rem)); margin: 0 auto; }
     header { padding: 1.75rem 0 0.5rem; }
     h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 0.35rem; }
@@ -158,7 +160,12 @@
   <header>
     <h1>Certificate Manager</h1>
     <p class="lede">Save one DNS provider and a ClearPass login, then issue a certificate and install it on the cluster.</p>
-    <p><a href="/docs">API documentation</a></p>
+    <div class="header-row">
+      <a href="/docs">API documentation</a>
+      <form id="logout-form" action="/logout" method="post" hidden>
+        <button type="submit">Log out</button>
+      </form>
+    </div>
   </header>
   <main>
     <details class="card" id="card-status">
@@ -482,6 +489,10 @@
           data = { message: text };
         }
       }
+      if (response.status === 401) {
+        window.location.assign("/login");
+        throw new Error("Sign in required.");
+      }
       if (!response.ok) {
         const detail = data && data.detail;
         let message = response.statusText;
@@ -525,6 +536,7 @@
         (health.certs_expiring_soon || 0) + " expiring within 30 days.",
       ];
       $("status-summary").textContent = summary.join(" ");
+      $("logout-form").hidden = !health.auth_required;
       renderSavedCerts();
       fillList($("status-services"), state.services.map((service) => {
         const pack = service.cert_pack_id ? " — certificate " + service.cert_pack_id : " — no certificate assigned";

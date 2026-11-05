@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — Certificate Manager</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --ink: #1c2430;
+      --muted: #5c6b7a;
+      --line: #d5dde6;
+      --accent: #145c6e;
+      --accent-ink: #ffffff;
+      --bad: #9d2c2c;
+      --bad-bg: #fdecec;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.5 "Segoe UI", system-ui, sans-serif;
+    }
+    main { width: min(28rem, calc(100% - 2rem)); margin: 0 auto; padding: 3rem 0; }
+    h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 0.35rem; }
+    p { margin: 0.4rem 0; }
+    .hint { color: var(--muted); }
+    form {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1rem 1.1rem 1.1rem;
+      margin-top: 1rem;
+    }
+    label { display: block; font-weight: 600; margin: 0.8rem 0 0.25rem; }
+    input {
+      width: 100%;
+      font: inherit;
+      color: inherit;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.55rem 0.7rem;
+    }
+    input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+    button {
+      font: inherit;
+      margin-top: 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: var(--accent-ink);
+      padding: 0.5rem 0.85rem;
+      cursor: pointer;
+    }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .result { margin: 0.8rem 0 0; padding: 0.7rem 0.8rem; border-radius: 8px; }
+    .result.bad { background: var(--bad-bg); color: var(--bad); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Certificate Manager</h1>
+    <p class="hint">Sign in to the setup page. The password is <code>ADMIN_PASSWORD</code> in the .env file. This browser stays signed in for 12 hours.</p>
+    <form method="post" action="/login">
+      __ERROR__
+      <label for="username">Username</label>
+      <input id="username" name="username" value="__USERNAME__" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <input type="hidden" name="next" value="__NEXT__">
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

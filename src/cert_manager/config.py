@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # Login for the setup page, API docs, and /api. Empty password leaves them open.
+    admin_username: str = "admin"
+    admin_password: str = ""
+
     # Docker socket for nginx reload (optional)
     docker_socket: str = "/var/run/docker.sock"
     nginx_container_name: str = "nginx"
