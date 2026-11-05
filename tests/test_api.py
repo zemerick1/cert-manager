@@ -153,6 +153,38 @@ class TestCredentialEndpoints:
         r = app_client.delete("/api/credentials/acme/del-cred")
         assert r.status_code == 200
 
+    def test_replacing_provider_drops_the_previous_secret(self, app_client):
+        from cert_manager.api import routes
+
+        app_client.post(
+            "/api/credentials/acme",
+            json={
+                "id": "dns",
+                "name": "Cloudflare",
+                "provider": "cloudflare",
+                "api_token": "cf-token-value",
+            },
+        )
+        r = app_client.post(
+            "/api/credentials/acme",
+            json={
+                "id": "dns",
+                "name": "Route 53",
+                "provider": "route53",
+                "access_key_id": "AKIAEXAMPLE",
+                "secret_access_key": "aws-secret-value",
+            },
+        )
+        assert r.status_code == 200
+        stored = routes._app_context["config"].get_acme_credential("dns")
+        assert stored["provider"] == "route53"
+        assert stored["access_key_id"] == "AKIAEXAMPLE"
+        assert stored["secret_access_key"] == "aws-secret-value"
+        assert "api_token" not in stored
+        listed = app_client.get("/api/credentials/acme").text
+        assert "aws-secret-value" not in listed
+        assert "cf-token-value" not in listed
+
     def test_add_and_list_clearpass(self, app_client):
         r = app_client.post(
             "/api/credentials/clearpass",
@@ -230,6 +262,18 @@ class TestSetupPage:
         assert r.status_code == 200
         assert "text/html" in r.headers.get("content-type", "")
         assert "Cloudflare" in r.text
+        assert "DNS provider" in r.text
+        assert "DigitalOcean" in r.text
+        assert "Route 53" in r.text
+        assert "Generate New Token" in r.text
+        assert "hosted zone" in r.text
+        assert "cf-saved" not in r.text
+        assert "provider: dns.provider" in r.text
+        assert "credential_id: dns.id" in r.text
+        assert "body.access_key_id" in r.text
+        assert "body.secret_access_key" in r.text
+        assert '$("dns-secret-key").value = ""' in r.text
+        assert "Save a Cloudflare token." not in r.text
         assert "ClearPass" in r.text
         assert "Issue and install" in r.text
         assert "<details" in r.text
@@ -451,6 +495,63 @@ class TestCredentialTests:
         r = app_client.post("/api/credentials/acme/aws/test")
         assert r.json()["success"] is False
         assert "route53" in r.json()["message"]
+        assert "secret" not in r.json()["message"]
+
+    def test_digitalocean_token_ok(self, app_client, monkeypatch):
+        def fake_get(url, headers=None, params=None, timeout=None):
+            assert headers["Authorization"] == "Bearer do-secret-token"
+            assert url == "https://api.digitalocean.com/v2/domains"
+            return _Resp(
+                200,
+                {"domains": [{"name": "example.com"}], "meta": {"total": 1}},
+            )
+
+        monkeypatch.setattr("cert_manager.acme.digitalocean.requests.get", fake_get)
+        r = app_client.post(
+            "/api/credentials/acme/test",
+            json={"provider": "digitalocean", "api_token": "do-secret-token"},
+        )
+        body = r.json()
+        assert r.status_code == 200
+        assert body["success"] is True
+        assert "example.com" in body["message"]
+        assert body["data"]["domains"] == ["example.com"]
+        assert "do-secret-token" not in r.text
+
+    def test_saved_digitalocean_credential(self, app_client, monkeypatch):
+        app_client.post(
+            "/api/credentials/acme",
+            json={
+                "id": "do-test",
+                "name": "DigitalOcean",
+                "provider": "digitalocean",
+                "api_token": "do-saved-token",
+            },
+        )
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            assert headers["Authorization"] == "Bearer do-saved-token"
+            return _Resp(200, {"domains": [{"name": "example.com"}]})
+
+        monkeypatch.setattr("cert_manager.acme.digitalocean.requests.get", fake_get)
+        r = app_client.post("/api/credentials/acme/do-test/test")
+        assert r.status_code == 200
+        assert r.json()["success"] is True
+        assert "do-saved-token" not in r.text
+
+    def test_route53_inline_is_not_probed(self, app_client, monkeypatch):
+        def boom(*args, **kwargs):
+            raise AssertionError("DNS provider test called the network")
+
+        monkeypatch.setattr("cert_manager.acme.cloudflare.requests.get", boom)
+        monkeypatch.setattr("cert_manager.acme.digitalocean.requests.get", boom)
+        r = app_client.post(
+            "/api/credentials/acme/test",
+            json={"provider": "route53", "api_token": "unused-token"},
+        )
+        assert r.json()["success"] is False
+        assert "route53" in r.json()["message"]
+        assert "unused-token" not in r.text
 
     def test_missing_acme_credential(self, app_client):
         r = app_client.post("/api/credentials/acme/missing/test")

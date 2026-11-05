@@ -6,9 +6,11 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from cert_manager.acme.cloudflare import test_cloudflare_token
+from cert_manager.acme.digitalocean import test_digitalocean_token
 from cert_manager.api.models import (
     AcmeCredential,
     AcmeCredentialInput,
+    AcmeCredentialTestInput,
     AppSettingsInput,
     CertJob,
     CertPack,
@@ -17,7 +19,6 @@ from cert_manager.api.models import (
     ClearPassConnectionTestInput,
     ClearPassCredential,
     ClearPassCredentialInput,
-    CloudflareTokenTestInput,
     HealthResponse,
     ManagedService,
     OperationResult,
@@ -398,9 +399,12 @@ def list_acme_credentials(ctx: Context):
 
 
 @router.post("/credentials/acme/test", response_model=OperationResult, tags=["Credentials"])
-def test_acme_credential_inline(data: CloudflareTokenTestInput):
-    """Tests a Cloudflare token without saving it."""
-    return _probe_result(test_cloudflare_token(data.api_token))
+def test_acme_credential_inline(data: AcmeCredentialTestInput):
+    """Tests a Cloudflare or DigitalOcean token without saving it.
+
+    A body with only api_token still checks Cloudflare. Route 53 is not called.
+    """
+    return _test_dns_provider(data.provider, data.api_token or "")
 
 
 @router.post(
@@ -409,20 +413,15 @@ def test_acme_credential_inline(data: CloudflareTokenTestInput):
     tags=["Credentials"],
 )
 def test_acme_credential(credential_id: str, ctx: Context):
-    """Tests a saved ACME credential. Live checks are implemented for Cloudflare."""
+    """Tests a saved ACME credential.
+
+    Live checks are implemented for Cloudflare and DigitalOcean. Route 53
+    and every other provider return a failure and are not called.
+    """
     cred = ctx["config"].get_acme_credential(credential_id)
     if not cred:
         raise HTTPException(status_code=404, detail=f"Credential '{credential_id}' not found")
-    if cred.get("provider") != "cloudflare":
-        provider = cred.get("provider") or "unknown"
-        return OperationResult(
-            success=False,
-            message=(
-                "Connection test is available for Cloudflare tokens. "
-                f"This credential is {provider}."
-            ),
-        )
-    return _probe_result(test_cloudflare_token(cred.get("api_token") or ""))
+    return _test_dns_provider(cred.get("provider") or "unknown", cred.get("api_token") or "")
 
 
 @router.post("/credentials/acme", response_model=OperationResult, tags=["Credentials"])
@@ -550,6 +549,30 @@ def _probe_result(result: dict) -> OperationResult:
         success=bool(result.get("success")),
         message=result.get("message", ""),
         data=result.get("data"),
+    )
+
+
+def _test_dns_provider(provider: str, api_token: str) -> OperationResult:
+    """Probes Cloudflare and DigitalOcean. Other providers are not called."""
+    name = (provider or "cloudflare").strip().lower()
+    if name == "cloudflare":
+        return _probe_result(test_cloudflare_token(api_token))
+    if name == "digitalocean":
+        return _probe_result(test_digitalocean_token(api_token))
+    if name == "route53":
+        return OperationResult(
+            success=False,
+            message=(
+                "This page does not call AWS for route53. "
+                "A wrong access key fails when Certbot requests the certificate."
+            ),
+        )
+    return OperationResult(
+        success=False,
+        message=(
+            "Connection test is available for Cloudflare and DigitalOcean tokens. "
+            f"This credential is {name}."
+        ),
     )
 
 

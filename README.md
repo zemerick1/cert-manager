@@ -4,6 +4,18 @@ An unofficial fork of [nowireless4u/cert-manager](https://github.com/nowireless4
 
 One FastAPI service issues Let's Encrypt certificates with Certbot and can install them on an Aruba ClearPass cluster. The REST API is the control plane. An optional setup page in the same process calls that API. The page is not required. Anything the page can do, a script can do by calling the API directly.
 
+## TLDR
+
+```bash
+git clone https://github.com/zemerick1/cert-manager.git
+cd cert-manager
+docker compose up --build
+```
+
+Open http://localhost:8000/ in a browser. From another machine, open http://<this-host>:8000/.
+
+That command keeps the log in the terminal. The same process is also published on port 80, which is where ClearPass downloads a certificate. Before that install, copy `.env.example` to `.env` and set `EDGE_DOMAIN` to this host's name or IP. Quick start below has the background command and the rest of the setup.
+
 ## Architecture
 
 The container runs one process. It serves the API, the optional page, and the certificate download ClearPass uses.
@@ -28,7 +40,7 @@ Let's Encrypt              cluster publisher
  the TXT record)            from this service)
 ```
 
-**Issuance.** A certificate request runs `certbot certonly`. The DNS plugin creates the `_acme-challenge` TXT record and deletes it afterward. This service does not call the DNS provider's API itself. Installed DNS plugins are Cloudflare, Route 53, and DigitalOcean. Google Cloud DNS, OVH, and DuckDNS are named in the provider list, and their Certbot plugins are not installed. HTTP-01 standalone and webroot are available. The nginx and apache plugins are not installed. HTTP-01 cannot issue a wildcard.
+**Issuance.** A certificate request runs `certbot certonly`. The DNS plugin creates the `_acme-challenge` TXT record and deletes it afterward. This service does not call the DNS provider's API itself, except for the read-only token checks on the setup page. The page offers Cloudflare, Route 53, or DigitalOcean, and it stores one of them at a time. Installed DNS plugins are those three. `GET /api/providers/acme` also names Google Cloud DNS, OVH, and DuckDNS. Their Certbot plugins are not installed, so those names cannot issue a certificate. HTTP-01 standalone and webroot are available. The nginx and apache plugins are not installed. HTTP-01 cannot issue a wildcard.
 
 A renewal is a new issuance. The service removes the old Certbot lineage for that name and requests the certificate again.
 
@@ -38,7 +50,7 @@ Certificates with `is_edge: false` are stored under `data/certs/`. That is the u
 
 The publisher's cluster API supplies the node list, and the certificate is installed on each of those servers. `additional_nodes` are further hostnames contacted directly. A usual cluster is the publisher plus one or more subscribers. The setup page stores those subscriber hostnames with the ClearPass login.
 
-**Setup page.** `GET /` returns one HTML file. There is no separate frontend build. The page saves a Cloudflare token, saves a ClearPass API client, issues a certificate, and installs it by calling `/api`. Current state lists saved certificates and can deploy one of them again. The API keeps working with the page closed.
+**Setup page.** `GET /` returns one HTML file. There is no separate frontend build. The page saves one DNS provider (Cloudflare, Route 53, or DigitalOcean), saves a ClearPass API client, issues a certificate, and installs it by calling `/api`. Current state lists saved certificates and can deploy one of them again. The API keeps working with the page closed. A script can still store more than one ACME credential. The page will not offer a second provider, and Save replaces the credential it is using.
 
 **Background work.** Two loops run inside the process. Once a day (00:30 UTC by default) the renewal loop reissues ACME certificates inside the renewal window and deploys them to services that use them. Every five minutes the monitor compares the certificate on each service with the copy stored here and deploys again when the serial numbers differ. It also retries a certificate request that is still pending or failed, up to five times.
 
@@ -98,7 +110,7 @@ Open http://localhost:8000/. The page is one file served by this service. It is 
 
 The cards start collapsed. Current state is the renewal line: whether the scheduler is running, how many certificates are saved, and how many expire within 30 days. It does not name the next check or say which certificates Let's Encrypt will replace.
 
-![Setup page. Current state, Cloudflare, ClearPass, Certificate, and Your certificate.](docs/images/setup-page.png)
+![Setup page. Current state, DNS provider, ClearPass, Certificate, and Your certificate.](docs/images/setup-page.png)
 
 The Certificate card is a Let's Encrypt request. The usage list is where that certificate is installed on ClearPass.
 
@@ -107,9 +119,17 @@ The Certificate card is a Let's Encrypt request. The usage list is where that ce
 The page has these cards:
 
 1. **Current state.** Saved certificates, the ClearPass target each one is assigned to, and a Deploy button that installs that saved certificate again. The card also shows the download address from `EDGE_DOMAIN`.
-2. **Cloudflare.** Create an API token in Cloudflare with Zone DNS Edit and Zone Zone Read on the zone that owns the name. Paste the token here. This is not the Global API Key.
+2. **DNS provider.** Pick Cloudflare, DigitalOcean, or Route 53. The page keeps one credential. Saving again replaces it, including the secret.
+
+   ![DNS provider card. The list shows Cloudflare, DigitalOcean, and Route 53.](docs/images/dns-provider.png)
+
+   Cloudflare: open My Profile, then API Tokens, then Create Token. Give the token Zone DNS Edit and Zone Zone Read, and include the zone that owns the certificate name. Do not use the Global API Key. Test token checks the token before a certificate is requested.
+
+   DigitalOcean: open API, then Tokens, then Generate New Token. Turn on Write. Copy the token now. DigitalOcean shows it once. The token must be allowed to edit the domain that owns the certificate name. Test token lists domains and does not create records.
+
+   Route 53: in AWS, open IAM and create an access key that can change records in the Route 53 hosted zone for the certificate name. Copy the access key ID and the secret access key. AWS shows the secret once. Region is optional. Route 53 is global. This page does not call AWS until a certificate is requested.
 3. **ClearPass.** Create the API client in ClearPass first (Administration, API Services, API Clients). Operating mode is ClearPass REST API, grant type is Client credentials, and the operator profile must be allowed to manage server certificates and the trust list. Test login reads the DNS name currently installed for HTTPS (RSA), HTTPS (ECC), RADIUS / EAP, RadSec, and Database.
-4. **Certificate.** Names on the certificate, the Let's Encrypt account email, and the ClearPass usage. Issue and install requests a certificate and then deploys it. Deploy on a saved certificate does not request a new one.
+4. **Certificate.** Names on the certificate, the Let's Encrypt account email, and the ClearPass usage. Issue and install requests a certificate with the saved DNS provider and then deploys it. Deploy on a saved certificate does not request a new one.
 5. **Your certificate.** Paste a PEM chain and private key you already have. Save and install stores that pack as a manual certificate and deploys it. Let's Encrypt is not contacted, and the daily job does not renew it.
 
 The ClearPass API client cannot be created from this page. The client secret is shown once inside ClearPass.
@@ -174,8 +194,8 @@ Longer notes are in [docs/API_REFERENCE.md](docs/API_REFERENCE.md).
 | GET | `/api/services/{name}/health` | Compare the stored certificate with the one on ClearPass |
 | GET | `/api/credentials/acme` | List ACME credentials. Secrets are omitted |
 | POST | `/api/credentials/acme` | Save an ACME credential |
-| POST | `/api/credentials/acme/test` | Check a Cloudflare token without saving it |
-| POST | `/api/credentials/acme/{id}/test` | Check a saved Cloudflare credential |
+| POST | `/api/credentials/acme/test` | Check a Cloudflare or DigitalOcean token without saving it. Route 53 is not called |
+| POST | `/api/credentials/acme/{id}/test` | Check a saved Cloudflare or DigitalOcean credential. Route 53 is not called |
 | GET | `/api/credentials/clearpass` | List ClearPass logins. Secrets are omitted |
 | POST | `/api/credentials/clearpass` | Save a ClearPass login |
 | POST | `/api/credentials/clearpass/test` | Log in and read installed certificate names |
@@ -187,7 +207,9 @@ The setup page uses the job and credential-test routes. The blocking request and
 
 ### Examples
 
-Save a Cloudflare token. The token needs Zone DNS Edit and Zone Zone Read. The Let's Encrypt account email is the `email` field on the certificate request, not this credential.
+Save a DNS credential. The Let's Encrypt account email is the `email` field on the certificate request, not this credential. The setup page stores one of these at a time. A script can post any of the three.
+
+Cloudflare needs Zone DNS Edit and Zone Zone Read. DigitalOcean needs a write token for the domain. Route 53 needs an access key that can change records in the hosted zone. `region` is optional.
 
 ```bash
 curl -X POST http://localhost:8000/api/credentials/acme \
@@ -200,7 +222,21 @@ curl -X POST http://localhost:8000/api/credentials/acme \
   }'
 ```
 
-Request a certificate and wait. Use `"is_edge": false` for a certificate that will be installed on ClearPass.
+DigitalOcean uses `provider` `digitalocean` and `api_token`. Route 53 uses `access_key_id` and `secret_access_key`:
+
+```bash
+curl -X POST http://localhost:8000/api/credentials/acme \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "route53-main",
+    "name": "Route 53",
+    "provider": "route53",
+    "access_key_id": "your-access-key-id",
+    "secret_access_key": "your-secret-access-key"
+  }'
+```
+
+Request a certificate and wait. `provider` has to match the saved credential. Use `"is_edge": false` for a certificate that will be installed on ClearPass.
 
 ```bash
 curl -X POST http://localhost:8000/api/certs/request \

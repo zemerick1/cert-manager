@@ -201,8 +201,14 @@ class CertJob(BaseModel):
     message: Optional[str] = None
 
 
-class CloudflareTokenTestInput(BaseModel):
-    api_token: str = Field(..., min_length=1, description="Cloudflare API token to test")
+class AcmeCredentialTestInput(BaseModel):
+    """Inline DNS check. Omitting provider keeps the Cloudflare token check."""
+
+    api_token: Optional[str] = Field(None, description="API token for Cloudflare or DigitalOcean")
+    provider: str = Field(
+        "cloudflare",
+        description="Provider name. route53 is accepted and is not called",
+    )
 
 
 class ClearPassConnectionTestInput(BaseModel):

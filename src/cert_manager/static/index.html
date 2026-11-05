@@ -21,6 +21,7 @@
       --warn-bg: #fff6e0;
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       margin: 0;
       background: var(--bg);
@@ -156,7 +157,7 @@
 <body>
   <header>
     <h1>Certificate Manager</h1>
-    <p class="lede">Save a Cloudflare token and a ClearPass login, then issue a certificate and install it on the cluster.</p>
+    <p class="lede">Save one DNS provider and a ClearPass login, then issue a certificate and install it on the cluster.</p>
     <p><a href="/docs">API documentation</a></p>
   </header>
   <main>
@@ -179,27 +180,43 @@
       </div>
     </details>
 
-    <details class="card" id="card-cf">
+    <details class="card" id="card-dns">
       <summary>
         <span class="num">1</span>
-        <h2 id="cf-title">Cloudflare</h2>
-        <span class="badge" id="cf-badge">Not saved</span>
+        <h2 id="dns-title">DNS provider</h2>
+        <span class="badge" id="dns-badge">Not saved</span>
         <span class="chevron" aria-hidden="true"></span>
       </summary>
       <div class="panel">
-        <p class="hint">In Cloudflare, open My Profile, then API Tokens, then Create Token. Give the token Zone DNS Edit and Zone Zone Read, and include the zone that owns the certificate name. Do not use the Global API Key.</p>
-        <form id="cf-form">
-          <label for="cf-saved">Saved credential</label>
-          <select id="cf-saved"></select>
-          <label for="cf-token">API token</label>
-          <input id="cf-token" name="api_token" type="password" autocomplete="off" spellcheck="false">
+        <p class="hint">Pick one provider. The certificate name has to live in that provider's zone. Saving replaces the credential stored here, including its secret.</p>
+        <form id="dns-form">
+          <label for="dns-provider">Provider</label>
+          <select id="dns-provider">
+            <option value="cloudflare">Cloudflare</option>
+            <option value="digitalocean">DigitalOcean</option>
+            <option value="route53">Route 53</option>
+          </select>
+          <p class="hint" id="dns-help">In Cloudflare, open My Profile, then API Tokens, then Create Token. Give the token Zone DNS Edit and Zone Zone Read, and include the zone that owns the certificate name. Do not use the Global API Key.</p>
+          <p class="hint" id="dns-saved">Nothing saved yet. This page keeps one DNS credential.</p>
+          <div id="dns-token-fields">
+            <label for="dns-token">API token</label>
+            <input id="dns-token" name="api_token" type="password" autocomplete="off" spellcheck="false">
+          </div>
+          <div id="dns-aws-fields" hidden>
+            <label for="dns-access-key">Access key ID</label>
+            <input id="dns-access-key" autocomplete="off" spellcheck="false">
+            <label for="dns-secret-key">Secret access key</label>
+            <input id="dns-secret-key" type="password" autocomplete="off" spellcheck="false">
+            <label for="dns-region">Region (optional)</label>
+            <input id="dns-region" autocomplete="off" spellcheck="false">
+          </div>
           <div class="actions">
-            <button type="submit">Test token</button>
-            <button type="button" id="cf-save">Save token</button>
-            <button type="button" id="cf-test-saved">Test saved token</button>
+            <button type="submit" id="dns-test">Test token</button>
+            <button type="button" id="dns-save">Save</button>
+            <button type="button" id="dns-test-saved">Test saved token</button>
           </div>
         </form>
-        <div id="cf-result" class="result" hidden></div>
+        <div id="dns-result" class="result" hidden></div>
       </div>
     </details>
 
@@ -251,7 +268,7 @@
         <span class="chevron" aria-hidden="true"></span>
       </summary>
       <div class="panel">
-        <p class="hint">Names on the certificate, one per line. A name like <span lang="en">*.example.com</span> needs DNS Edit on the example.com zone. The certificate is requested from Let's Encrypt, then installed on the ClearPass usage you pick.</p>
+        <p class="hint">Names on the certificate, one per line. A name like <span lang="en">*.example.com</span> needs permission to edit DNS on the zone that owns that name. The certificate is requested from Let's Encrypt with the DNS provider saved above, then installed on the ClearPass usage you pick.</p>
         <form id="issue-form">
           <label for="domains">Certificate names</label>
           <textarea id="domains" placeholder="clearpass.example.com" spellcheck="false"></textarea>
@@ -316,6 +333,18 @@
   </footer>
   <noscript><p>This page needs JavaScript to talk to the certificate service.</p></noscript>
   <script>
+    const DNS_PROVIDERS = ["cloudflare", "digitalocean", "route53"];
+    const DNS_LABELS = {
+      cloudflare: "Cloudflare",
+      digitalocean: "DigitalOcean",
+      route53: "Route 53",
+    };
+    const DNS_HELP = {
+      cloudflare: "In Cloudflare, open My Profile, then API Tokens, then Create Token. Give the token Zone DNS Edit and Zone Zone Read, and include the zone that owns the certificate name. Do not use the Global API Key.",
+      digitalocean: "In DigitalOcean, open API, then Tokens, then Generate New Token. Turn on Write. Copy the token now. DigitalOcean shows it once. The token must be allowed to edit the domain that owns the certificate name.",
+      route53: "In AWS, open IAM and create an access key that can change records in the Route 53 hosted zone for the certificate name. Copy the access key ID and the secret access key. AWS shows the secret once. Region is optional. Route 53 is global. This page does not call AWS until a certificate is requested.",
+    };
+
     const state = {
       health: {},
       acme: [],
@@ -327,15 +356,27 @@
     };
 
     const $ = (id) => document.getElementById(id);
-    const cfSaved = $("cf-saved");
     const cpSaved = $("cp-saved");
 
-    $("cf-form").addEventListener("submit", (event) => {
+    $("dns-form").addEventListener("submit", (event) => {
       event.preventDefault();
-      testCloudflare(false);
+      if ($("dns-test").hidden) saveDns();
+      else testDns(false);
     });
-    $("cf-save").addEventListener("click", saveCloudflare);
-    $("cf-test-saved").addEventListener("click", () => testCloudflare(true));
+    $("dns-save").addEventListener("click", saveDns);
+    $("dns-test-saved").addEventListener("click", () => testDns(true));
+    $("dns-provider").addEventListener("change", () => {
+      $("dns-provider").dataset.user = "1";
+      if ($("dns-provider").value === "route53") {
+        $("dns-token").value = "";
+      } else {
+        $("dns-access-key").value = "";
+        $("dns-secret-key").value = "";
+        $("dns-region").value = "";
+      }
+      syncDnsFields();
+      updateIssueButton();
+    });
     $("cp-form").addEventListener("submit", (event) => {
       event.preventDefault();
       testClearpass(false);
@@ -351,7 +392,7 @@
     ["cp-name", "cp-host", "cp-client", "cp-nodes"].forEach((id) => {
       $(id).addEventListener("change", () => localStorage.setItem("cm-" + id, $(id).value.trim()));
     });
-    ["domains", "email", "usage", "cf-saved", "cp-saved", "cp-nodes"].forEach((id) => {
+    ["domains", "email", "usage", "cp-saved", "cp-nodes"].forEach((id) => {
       $(id).addEventListener("input", updateIssueButton);
       $(id).addEventListener("change", updateIssueButton);
     });
@@ -366,8 +407,12 @@
     $("byoc-chain-file").addEventListener("change", () => readPemFile($("byoc-chain-file"), "byoc-chain"));
     $("byoc-key-file").addEventListener("change", () => readPemFile($("byoc-key-file"), "byoc-key"));
 
-    function selectedAcme() {
-      return state.acme.find((item) => item.id === cfSaved.value && item.provider === "cloudflare") || null;
+    function dnsCredential() {
+      const items = state.acme.filter((item) => DNS_PROVIDERS.includes(item.provider));
+      return items.find((item) => item.id === "dns")
+        || items.find((item) => item.id === "cloudflare")
+        || items[0]
+        || null;
     }
 
     function selectedClearpass() {
@@ -464,7 +509,7 @@
         api("GET", "/api/services"),
       ]);
       state.health = health;
-      state.acme = acme.filter((item) => item.provider === "cloudflare");
+      state.acme = acme.filter((item) => DNS_PROVIDERS.includes(item.provider));
       state.clearpass = clearpass;
       state.certs = certs;
       state.services = services;
@@ -489,10 +534,13 @@
       }));
       if (!state.services.length) fillList($("status-services"), ["No ClearPass targets yet."]);
 
-      fillSelect(cfSaved, state.acme, (item) => item.name + " (" + item.id + ")");
       fillSelect(cpSaved, state.clearpass, (item) => item.name + " — " + item.host);
-      $("cf-badge").textContent = state.acme.length ? "Saved" : "Not saved";
-      $("cf-badge").className = "badge" + (state.acme.length ? " ok" : "");
+      const providerSelect = $("dns-provider");
+      const dns = dnsCredential();
+      if (providerSelect.dataset.user !== "1" && dns) providerSelect.value = dns.provider;
+      syncDnsFields();
+      $("dns-badge").textContent = dns ? "Saved" : "Not saved";
+      $("dns-badge").className = "badge" + (dns ? " ok" : "");
       $("cp-badge").textContent = state.clearpass.length ? "Saved" : "Not saved";
       $("cp-badge").className = "badge" + (state.clearpass.length ? " ok" : "");
 
@@ -601,20 +649,20 @@
       if (state.cardsReady) return;
       state.cardsReady = true;
       let id = "card-issue";
-      if (!state.acme.length) id = "card-cf";
+      if (!dnsCredential()) id = "card-dns";
       else if (!state.clearpass.length) id = "card-cp";
       $(id).open = true;
     }
 
     function updateIssueButton() {
       const reasons = [];
-      if (!selectedAcme()) reasons.push("Save a Cloudflare token.");
+      if (!dnsCredential()) reasons.push("Save a DNS provider.");
       if (!selectedClearpass()) reasons.push("Save a ClearPass login.");
       if (!parseDomains($("domains").value).length) reasons.push("Enter a certificate name.");
       if (!$("email").value.includes("@")) reasons.push("Enter the Let's Encrypt email.");
       if (callbackBlocked()) reasons.push("EDGE_DOMAIN is still a local address, so install stays off.");
-      $("cf-test-saved").disabled = state.busy || !selectedAcme();
       $("cp-test-saved").disabled = state.busy || !selectedClearpass();
+      syncDnsFields();
       $("issue-button").disabled = state.busy || reasons.length > 0;
       $("issue-block").textContent = reasons.join(" ");
       updateByocButton();
@@ -650,49 +698,90 @@
       $("status-summary").textContent = "Could not load the service: " + error.message;
     }
 
-    async function testCloudflare(saved) {
-      try {
-        if (saved && !selectedAcme()) {
-          setResult($("cf-result"), "bad", "Save a Cloudflare token first.");
-          return;
-        }
-        const token = $("cf-token").value.trim();
-        if (!saved && !token) {
-          setResult($("cf-result"), "bad", "Paste the API token first.");
-          return;
-        }
-        const result = saved
-          ? await api("POST", "/api/credentials/acme/" + encodeURIComponent(selectedAcme().id) + "/test")
-          : await api("POST", "/api/credentials/acme/test", { api_token: token });
-        setResult($("cf-result"), result.success ? "ok" : "bad", result.message || "Test finished.");
-      } catch (error) {
-        setResult($("cf-result"), "bad", error.message);
+    function syncDnsFields() {
+      const provider = $("dns-provider").value;
+      const aws = provider === "route53";
+      const dns = dnsCredential();
+      $("dns-help").textContent = DNS_HELP[provider] || DNS_HELP.cloudflare;
+      $("dns-token-fields").hidden = aws;
+      $("dns-aws-fields").hidden = !aws;
+      $("dns-test").hidden = aws;
+      const savedCanTest = dns && dns.provider !== "route53";
+      $("dns-test-saved").hidden = aws || !savedCanTest;
+      $("dns-test-saved").disabled = state.busy || !savedCanTest;
+      if (dns) {
+        const label = DNS_LABELS[dns.provider] || dns.provider;
+        $("dns-saved").textContent = "Saved: " + label + ". Saving again replaces this credential.";
+      } else {
+        $("dns-saved").textContent = "Nothing saved yet. This page keeps one DNS credential.";
       }
     }
 
-    async function saveCloudflare() {
-      const token = $("cf-token").value.trim();
-      if (!token) {
-        setResult($("cf-result"), "bad", "Paste the API token first.");
-        return;
-      }
-      const existing = selectedAcme();
-      const id = existing ? existing.id : "cloudflare";
-      const name = existing ? existing.name : "Cloudflare";
+    async function testDns(saved) {
+      const provider = $("dns-provider").value;
       try {
-        const result = await api("POST", "/api/credentials/acme", {
-          id: id,
-          name: name,
-          provider: "cloudflare",
-          api_token: token,
-        });
-        $("cf-token").value = "";
-        await refresh();
-        cfSaved.value = id;
-        updateIssueButton();
-        setResult($("cf-result"), "ok", result.message || "Token saved.");
+        if (provider === "route53" || (saved && dnsCredential() && dnsCredential().provider === "route53")) {
+          setResult($("dns-result"), "bad", "Route 53 is not tested from this page. A wrong key fails when the certificate is requested.");
+          return;
+        }
+        if (saved && !dnsCredential()) {
+          setResult($("dns-result"), "bad", "Save a DNS provider first.");
+          return;
+        }
+        const token = $("dns-token").value.trim();
+        if (!saved && !token) {
+          setResult($("dns-result"), "bad", "Paste the API token first.");
+          return;
+        }
+        const result = saved
+          ? await api("POST", "/api/credentials/acme/" + encodeURIComponent(dnsCredential().id) + "/test")
+          : await api("POST", "/api/credentials/acme/test", { provider: provider, api_token: token });
+        setResult($("dns-result"), result.success ? "ok" : "bad", result.message || "Test finished.");
       } catch (error) {
-        setResult($("cf-result"), "bad", error.message);
+        setResult($("dns-result"), "bad", error.message);
+      }
+    }
+
+    async function saveDns() {
+      const provider = $("dns-provider").value;
+      const existing = dnsCredential();
+      const id = existing ? existing.id : "dns";
+      const body = {
+        id: id,
+        name: DNS_LABELS[provider] || "DNS",
+        provider: provider,
+      };
+      if (provider === "route53") {
+        const accessKey = $("dns-access-key").value.trim();
+        const secretKey = $("dns-secret-key").value.trim();
+        if (!accessKey || !secretKey) {
+          setResult($("dns-result"), "bad", "Enter the access key ID and the secret access key.");
+          return;
+        }
+        body.access_key_id = accessKey;
+        body.secret_access_key = secretKey;
+        const region = $("dns-region").value.trim();
+        if (region) body.region = region;
+      } else {
+        const token = $("dns-token").value.trim();
+        if (!token) {
+          setResult($("dns-result"), "bad", "Paste the API token first.");
+          return;
+        }
+        body.api_token = token;
+      }
+      try {
+        const result = await api("POST", "/api/credentials/acme", body);
+        $("dns-token").value = "";
+        $("dns-access-key").value = "";
+        $("dns-secret-key").value = "";
+        $("dns-region").value = "";
+        delete $("dns-provider").dataset.user;
+        await refresh();
+        updateIssueButton();
+        setResult($("dns-result"), "ok", result.message || "DNS provider saved.");
+      } catch (error) {
+        setResult($("dns-result"), "bad", error.message);
       }
     }
 
@@ -875,9 +964,9 @@
       const domains = parseDomains($("domains").value);
       const email = $("email").value.trim();
       const usage = $("usage").value;
-      const cloudflare = selectedAcme();
+      const dns = dnsCredential();
       const clearpass = selectedClearpass();
-      if (!cloudflare || !clearpass || !domains.length || !email.includes("@") || callbackBlocked()) {
+      if (!dns || !clearpass || !domains.length || !email.includes("@") || callbackBlocked()) {
         updateIssueButton();
         return;
       }
@@ -892,8 +981,8 @@
         const job = await startJob({
           pack_name: pack,
           domains: domains,
-          provider: "cloudflare",
-          credential_id: cloudflare.id,
+          provider: dns.provider,
+          credential_id: dns.id,
           email: email,
           challenge_type: "dns-01",
           key_type: usage === "HTTPS(ECC)" ? "ecdsa" : "rsa",
